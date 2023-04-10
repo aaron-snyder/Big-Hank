@@ -29,7 +29,7 @@ public class BigHank extends ListenerAdapter {
     public static void main(String[] args) throws LoginException
     {
 
-        JDABuilder bot = JDABuilder.createDefault("OTYxODQ5MzMyMzM0NzQzNTUy.G4cm-n.fRamoDIyWHfO2R3SlE80tk6pz-lppayqHHm_4M");
+        JDABuilder bot = JDABuilder.createDefault("Key goes here");
         bot.setActivity(Activity.playing("bantz-big-bass-fishing"));
         bot.addEventListeners(new BigHank());
         bot.enableIntents(GatewayIntent.GUILD_MEMBERS);
