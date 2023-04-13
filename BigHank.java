@@ -1,35 +1,28 @@
-/*
- * Click nbfs://nbhost/SystemFileSystem/Templates/Licenses/license-default.txt to change this license
- */
-
-package mainPackage;
+/package mainPackage;
 import mainPackage.*;
+
+import java.lang.reflect.Member;
 import java.util.*;
-
-
 import net.dv8tion.jda.api.JDA;
 import net.dv8tion.jda.api.JDABuilder;
 import net.dv8tion.jda.api.entities.Activity;
+import net.dv8tion.jda.api.entities.User;
 import net.dv8tion.jda.api.*;
-
 import javax.security.auth.login.LoginException;
 import net.dv8tion.jda.api.events.message.MessageReceivedEvent;
 import net.dv8tion.jda.api.hooks.ListenerAdapter;
 import net.dv8tion.jda.api.requests.GatewayIntent;
 import org.jetbrains.annotations.NotNull;
 import net.dv8tion.jda.api.entities.channel.unions.MessageChannelUnion;
-/**
- *
- * @author Aaron Snyder
- */
-public class BigHank extends ListenerAdapter {
 
+public class BigHank extends ListenerAdapter {
+    Map<String, Inventory> globalInventory = new HashMap<>();
     Random rand = new Random();
 
     public static void main(String[] args) throws LoginException
     {
 
-        JDABuilder bot = JDABuilder.createDefault("Key goes here");
+        JDABuilder bot = JDABuilder.createDefault("Token goes here");
         bot.setActivity(Activity.playing("bantz-big-bass-fishing"));
         bot.addEventListeners(new BigHank());
         bot.enableIntents(GatewayIntent.GUILD_MEMBERS);
@@ -41,45 +34,75 @@ public class BigHank extends ListenerAdapter {
     @Override
     public void onMessageReceived(MessageReceivedEvent event) 
     {
+        MessageChannelUnion channel = event.getChannel();
+        String message = event.getMessage().toString();
+        User currentUser = event.getAuthor();
+        String ah = currentUser.getAsMention();
+
         if(event.getAuthor().isBot()) {
             return;
         }
 
-        String message = event.getMessage().getContentRaw();
-        MessageChannelUnion channel = event.getChannel();
-        int randFish = rand.nextInt(0,4);
+        // Check if user already has an inventory else create a default inventory for them
+        if(!globalInventory.containsKey(ah)) {
+            Inventory userInv = new Inventory(ah);
+            globalInventory.put(ah, userInv);
+            channel.sendMessage("Welcome to the lake " + ah + "!").queue();
+        }
 
+        // inventory command
+        if(message.contains("/inventory")){
+            channel.sendMessage(globalInventory.get(ah).getRods()).queue();
+            channel.sendMessage(globalInventory.get(ah).getFish()).queue();
+            channel.sendMessage(globalInventory.get(ah).getBaits()).queue();
+        }     
+        
+        // fish command
+        if(message.contains("/fish")){
+            channel.sendMessage("Which rod would you like to use?").queue();
+            
+        }
     }
 
-    public static String determineType()
-    {
-        String returnType = "go away";
+// Below code contains methods necessary for fishing process!
+// ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
+    public static String determineType(String rod)
+    {
+        ArrayList<String> catchableFish = new ArrayList<>();
+        switch(rod){
+            case "Tuna Tamer":
+                catchableFish.add("Tuna");
+            case "Salmon Slapper":
+                catchableFish.add("Salmon");
+                catchableFish.add("Halibut");
+            case "Catfish Clobberer":
+                catchableFish.add("Rainbow Trout");
+                catchableFish.add("Largemouth Bass");
+                catchableFish.add("Catfish");
+            case "Trout Tickler":
+                catchableFish.add("Trout");
+                catchableFish.add("Smallmouth Bass");
+            case "Guppy Getter":
+                catchableFish.add("Goldfish");
+                catchableFish.add("Guppy");
+                catchableFish.add("Pufferfish");
+                break;     
+            default:
+                return null;       
+        }
+        Random r = new Random();
+        String returnType = catchableFish.get(r.nextInt(0, catchableFish.size()));
         return returnType;
     }
 
-    public static int determineSize()
+    public static int determineSize(String type)
     {
         int returnInt = 0;
         return returnInt;
     }
 
-    public static void weatherMap()
-    {
-        Map<String, Object> weatherMap = new HashMap<>();
+    public static void store(String user){
+
     }
 }
-
-/*
- * func getWeatherMap() map[string]WeatherInfo {
-        WeatherMap := make(map[string]WeatherInfo)
-        WeatherMap["drizzle"] = WeatherInfo{Bait: "plug lure", Message: "It's drizzling..."}
-        WeatherMap["snow"] = WeatherInfo{Bait: "plain powerbait", Message: "Snow is falling..."}
-        WeatherMap["wind"] = WeatherInfo{Bait: "jig lure", Message: "A cold wind blows..."}
-        WeatherMap["storm"] = WeatherInfo{Bait: "spinner lure", Message: "The thunder rolls..."}
-        WeatherMap["fog"] = WeatherInfo{Bait: "glitter powerbait", Message: "The fog is thick..."}
-        WeatherMap["sun"] = WeatherInfo{Bait: "offal", Message: "The sun beats down..."}
-        WeatherMap["mist"] = WeatherInfo{Bait: "fly", Message: "Mist fills the air..."}
-        WeatherMap["sandstorm"] = WeatherInfo{Bait: "worm", Message: "A harsh sandstorm rages..."}
-        return WeatherMap
- */
