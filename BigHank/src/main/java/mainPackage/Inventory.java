@@ -92,8 +92,7 @@ public class Inventory implements Serializable
     public String sell()
     {
         int sellValue = 0;
-        int forValue = fish.size();
-        for(int i = 0; i < forValue; i++) 
+        for(int i = 0; i < fish.size(); i++) 
         {
             Fish f = fish.get(0);
             sellValue += f.getSize();
@@ -133,30 +132,15 @@ public class Inventory implements Serializable
 
     public String setBait(String bait)
     {
-        String checkBait = "";
         String returnMessage = "Yain't got any of that kind of bait!";
-        switch (bait)
-        {
-            case "worm":
-                checkBait = "Worm";
+
+        for (int i = 0; i < baits.size(); i++) {
+            if (baits.get(i).equalsIgnoreCase(bait)) {
+                this.bait = bait;
+                returnMessage = "Bait set!";
+                removeBait(bait);
                 break;
-            case "powerbait":
-                checkBait = "Powerbait";
-                break;
-            case "glitter":
-                checkBait = "Glitter Powerbait";
-                break;
-            case "spinner":
-                checkBait = "Spinner Lure";
-                break;
-            default:
-                this.bait = "";
-                break;
-        }
-        if (baits.contains(checkBait)) {
-            this.bait = bait;
-            returnMessage = "Bait set!";
-            removeBait(checkBait);
+            }
         }
         return returnMessage;
     }
@@ -179,7 +163,7 @@ public class Inventory implements Serializable
     {
         String returnString = "Baits:\n";
         for (String bait : baits) {
-            returnString = returnString + bait + " ";
+            returnString += bait + " ";
         }
         return returnString;
     }
@@ -222,6 +206,6 @@ public class Inventory implements Serializable
                 canFish = true;
             }
         };
-        timer.schedule(task, 10);
+        timer.schedule(task, 5000);
     }
 }

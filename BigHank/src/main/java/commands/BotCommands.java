@@ -38,8 +38,7 @@ public class BotCommands extends ListenerAdapter {
         // Fields
         MessageChannelUnion channel = event.getChannel();
         String message = event.getMessage().getContentRaw();
-        User ah = event.getAuthor();
-        String currentUser = ah.getName();
+        String currentUser = event.getAuthor().getName();
 
         // Check if event author is a bot
         if(event.getAuthor().isBot()) 
@@ -127,8 +126,9 @@ public class BotCommands extends ListenerAdapter {
                     objectOut.writeObject(globalInventory);
                     objectOut.close();
                     fileOut.close();
+                    System.out.println("Succesfully created/updated save file");
                 } catch (IOException e) {
-                    e.printStackTrace();
+                    System.out.println("Failed to create/update save file: " + e.toString());
                 }
                 break;
             
@@ -139,10 +139,10 @@ public class BotCommands extends ListenerAdapter {
                     globalInventory = (Map<String, Inventory>) objectIn.readObject();
                     objectIn.close();
                     fileIn.close();
+                    System.out.println("Successfully loaded save file");
                 } catch (IOException | ClassNotFoundException e) {
-                     e.printStackTrace();
+                    System.out.println("Failed to load save file");
                 }
         }
     }
-
 }

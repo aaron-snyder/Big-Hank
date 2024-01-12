@@ -18,7 +18,7 @@ import net.dv8tion.jda.api.entities.channel.unions.MessageChannelUnion;
 public class BigHank extends ListenerAdapter {
     public static void main(String[] args) throws LoginException
     {
-        JDABuilder bot = JDABuilder.createDefault("OTYxODQ5MzMyMzM0NzQzNTUy.GCKBXI.tivrTLObszU3UZ0JifsQ7-Vy244YrZse-D9ruU");
+        JDABuilder bot = JDABuilder.createDefault("token goes here");
         bot.setActivity(Activity.playing("bantz-big-bass-fishing")); // Sets bot's Discord activity
         bot.addEventListeners(new BotCommands()); // BotCommands class become event listener
         bot.enableIntents(GatewayIntent.GUILD_MEMBERS); // Allows bot to read from users
