@@ -1,3 +1,5 @@
+// File containing all slash commands and handles
+
 package commands;
 import mainPackage.*;
 
