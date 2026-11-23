@@ -40,8 +40,8 @@ public final class BigHank {
         JDA jda;
         try {
             // Least privilege: no optional gateway intents. JDA always uses the basic, non-privileged GUILDS
-            // intent, which tells Big Hank when he joins or leaves a server and which channels exist (all he needs
-            // to manage #big-hanks-lake). No message content, no member list, no presences. createLight also
+            // intent, which tells Big Hank when he joins or leaves a server and which channels and roles exist (all he
+            // needs to manage #big-hanks-lake). No message content, no member list, no presences. createLight also
             // turns off every optional cache.
             LakeKeeper lakeKeeper = new LakeKeeper(store);
             jda = JDABuilder.createLight(token, EnumSet.noneOf(GatewayIntent.class))
@@ -61,9 +61,10 @@ public final class BigHank {
                 err -> LOG.error("Failed to register slash commands", err));
 
         LOG.info("Big Hank is on the lake as {}", jda.getSelfUser().getName());
-        // The only permission Big Hank asks for is Manage Channels, to create #big-hanks-lake.
+        // Big Hank asks only for what his private lake needs: View Channels, Manage Channels, Manage Roles.
         LOG.info("Invite link: https://discord.com/oauth2/authorize?client_id={}&scope=bot+applications.commands"
-                + "&permissions={}", jda.getSelfUser().getApplicationId(), Permission.MANAGE_CHANNEL.getRawValue());
+                + "&permissions={}", jda.getSelfUser().getApplicationId(),
+                Permission.getRaw(LakeKeeper.REQUIRED_PERMISSIONS));
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             LOG.info("Shutting down, saving the lake...");

@@ -2,12 +2,19 @@ package bighank.commands;
 
 import bighank.data.GameStore;
 import bighank.data.GuildSettings;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.function.Consumer;
 import net.dv8tion.jda.api.Permission;
 import net.dv8tion.jda.api.entities.Guild;
+import net.dv8tion.jda.api.entities.IPermissionHolder;
+import net.dv8tion.jda.api.entities.Member;
+import net.dv8tion.jda.api.entities.PermissionOverride;
+import net.dv8tion.jda.api.entities.Role;
+import net.dv8tion.jda.api.entities.UserSnowflake;
 import net.dv8tion.jda.api.entities.channel.concrete.TextChannel;
 import net.dv8tion.jda.api.events.guild.GuildJoinEvent;
 import net.dv8tion.jda.api.events.guild.GuildLeaveEvent;
@@ -17,55 +24,76 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Gives every server Big Hank's own channel, {@value #CHANNEL_NAME}.
+ * Builds and maintains Big Hank's private lake in every server:
  *
  * <ul>
- *   <li>When Big Hank joins a server (or starts up in one he never set up), he creates the channel, or adopts an
- *       existing channel with that name.</li>
- *   <li>If a server manager later deletes the channel, Big Hank respects that and does <em>not</em> recreate it
- *       on his own. {@code /setup} brings it back.</li>
- *   <li>When Big Hank is removed from a server, that server's settings are forgotten.</li>
+ *   <li>a <b>Lake Angler</b> role that grants nothing except access to the lake, and</li>
+ *   <li>a <b>#big-hanks-lake</b> channel that only anglers (and Big Hank) can see.</li>
  * </ul>
  *
- * <p>The only permission this needs is Manage Channels. The channel topic explains how to join, so Big Hank never
- * needs to send regular messages.
+ * <p>Players get the role with {@code /start}, so nobody who hasn't joined ever sees the channel. If a server
+ * manager deletes the channel, Big Hank respects that and only rebuilds it when someone runs {@code /setup}. The
+ * role is internal plumbing, so it's quietly recreated whenever it's missing.
+ *
+ * <p>All Discord changes run one at a time on a background thread, so two requests can never race to create
+ * duplicate channels or roles.
  */
 public class LakeKeeper extends ListenerAdapter {
     private static final Logger LOG = LoggerFactory.getLogger(LakeKeeper.class);
 
     public static final String CHANNEL_NAME = "big-hanks-lake";
-    static final String CHANNEL_TOPIC = "🎣 Big Hank's fishing lake! Type /start to join, then /fish to cast a line. "
-            + "/commands lists everything. Not playing? Mute this channel and you'll never hear from Hank.";
+    public static final String ROLE_NAME = "Lake Angler";
+    static final String CHANNEL_TOPIC = "🎣 Big Hank's fishing lake! /fish to cast a line, /store to buy gear "
+            + "and sell your catch, /leaderboard for the top anglers. Only people who joined with /start can see this.";
 
-    /** What happened when we tried to make sure a server has its lake. */
-    public enum Status { ALREADY_EXISTS, ADOPTED, CREATED, MISSING_PERMISSION, IN_PROGRESS, FAILED }
+    /** Everything Big Hank needs: create the channel, create/assign the role, and set who can see the channel. */
+    public static final Set<Permission> REQUIRED_PERMISSIONS =
+            EnumSet.of(Permission.VIEW_CHANNEL, Permission.MANAGE_CHANNEL, Permission.MANAGE_ROLES);
 
-    public record Result(Status status, Long channelId) {}
+    public enum Mode {
+        /** Startup, joining a server, or a player joining: never recreates a channel a manager deleted. */
+        AUTOMATIC,
+        /** {@code /setup}: rebuilds the channel even if it was deleted. */
+        REBUILD
+    }
+
+    public enum Status { READY, MISSING_PERMISSIONS, CHANNEL_DELETED, ROLE_TOO_HIGH, FAILED }
+
+    /**
+     * Outcome of making sure a server's lake is in order.
+     *
+     * @param missing permissions Big Hank lacks (only for {@link Status#MISSING_PERMISSIONS})
+     * @param channelCreated whether a brand-new channel was made
+     */
+    public record Result(Status status, Long channelId, Long roleId, Set<Permission> missing,
+                         boolean channelCreated) {
+        static Result of(Status status) {
+            return new Result(status, null, null, Set.of(), false);
+        }
+    }
 
     private final GameStore store;
-    private final Set<Long> creating = ConcurrentHashMap.newKeySet();
+    private final ExecutorService worker = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "lake-keeper");
+        t.setDaemon(true);
+        return t;
+    });
 
     public LakeKeeper(GameStore store) {
         this.store = store;
     }
 
+    // ================================================================ events
+
     @Override
     public void onGuildJoin(GuildJoinEvent event) {
-        ensureLake(event.getGuild(), result -> logResult(event.getGuild(), result));
+        ensure(event.getGuild(), Mode.AUTOMATIC, result -> logResult(event.getGuild(), result));
     }
 
     @Override
     public void onGuildReady(GuildReadyEvent event) {
-        // Covers servers that added Big Hank while he was offline, or where creation failed last time.
-        // A server that *had* a lake which was later deleted is left alone.
-        Guild guild = event.getGuild();
-        boolean neverSetUp;
-        synchronized (store) {
-            neverSetUp = store.guild(guild.getIdLong()).fishingChannelId() == null;
-        }
-        if (neverSetUp) {
-            ensureLake(guild, result -> logResult(guild, result));
-        }
+        // Catches servers that added Big Hank while he was offline, and upgrades older lakes to private ones.
+        ensure(event.getGuild(), Mode.AUTOMATIC, result -> logResult(event.getGuild(), result));
     }
 
     @Override
@@ -77,70 +105,179 @@ public class LakeKeeper extends ListenerAdapter {
         LOG.info("Removed from server {}, forgot its settings", event.getGuild().getId());
     }
 
-    /**
-     * Makes sure the server has a working lake channel, creating it if needed. {@code onDone} is called exactly
-     * once, possibly on another thread.
-     */
-    public void ensureLake(Guild guild, Consumer<Result> onDone) {
+    // ================================================================ public API (all async)
+
+    /** Makes sure the lake exists and is private. {@code onDone} runs once, on the background thread. */
+    public void ensure(Guild guild, Mode mode, Consumer<Result> onDone) {
+        run(onDone, () -> ensureNow(guild, mode));
+    }
+
+    /** Lets a player into the lake by giving them the angler role. */
+    public void addAngler(Guild guild, long userId, Consumer<Result> onDone) {
+        run(onDone, () -> {
+            Result result = ensureNow(guild, Mode.AUTOMATIC);
+            if (result.status() == Status.READY) {
+                guild.addRoleToMember(UserSnowflake.fromId(userId), guild.getRoleById(result.roleId()))
+                        .reason("Joined Big Hank's lake")
+                        .complete();
+            }
+            return result;
+        });
+    }
+
+    /** Takes the angler role away, hiding the lake from the player again. */
+    public void removeAngler(Guild guild, long userId, Consumer<Result> onDone) {
+        run(onDone, () -> {
+            Long roleId;
+            synchronized (store) {
+                roleId = store.guild(guild.getIdLong()).anglerRoleId();
+            }
+            Role role = roleId == null ? null : guild.getRoleById(roleId);
+            if (role != null && guild.getSelfMember().canInteract(role)
+                    && guild.getSelfMember().hasPermission(Permission.MANAGE_ROLES)) {
+                guild.removeRoleFromMember(UserSnowflake.fromId(userId), role).reason("Left Big Hank's lake").complete();
+            }
+            return Result.of(Status.READY);
+        });
+    }
+
+    private void run(Consumer<Result> onDone, java.util.function.Supplier<Result> task) {
+        worker.execute(() -> {
+            Result result;
+            try {
+                result = task.get();
+            } catch (RuntimeException e) {
+                LOG.warn("Lake maintenance failed", e);
+                result = Result.of(Status.FAILED);
+            }
+            onDone.accept(result);
+        });
+    }
+
+    // ================================================================ the actual work (blocking)
+
+    /** Does the work synchronously. Only call from the worker thread (or tests). */
+    Result ensureNow(Guild guild, Mode mode) {
         long guildId = guild.getIdLong();
+        Long channelId;
+        Long roleId;
+        List<Long> existingPlayers;
         synchronized (store) {
             GuildSettings settings = store.guild(guildId);
-            Long current = settings.fishingChannelId();
-            if (current != null && guild.getTextChannelById(current) != null) {
-                onDone.accept(new Result(Status.ALREADY_EXISTS, current));
-                return;
-            }
-
-            List<TextChannel> named = guild.getTextChannelsByName(CHANNEL_NAME, true);
-            if (!named.isEmpty()) {
-                long adopted = named.get(0).getIdLong();
-                settings.setFishingChannelId(adopted);
-                store.save();
-                onDone.accept(new Result(Status.ADOPTED, adopted));
-                return;
-            }
-
-            if (!guild.getSelfMember().hasPermission(Permission.MANAGE_CHANNEL)) {
-                onDone.accept(new Result(Status.MISSING_PERMISSION, null));
-                return;
-            }
-
-            if (!creating.add(guildId)) {
-                onDone.accept(new Result(Status.IN_PROGRESS, null));
-                return;
-            }
+            channelId = settings.fishingChannelId();
+            roleId = settings.anglerRoleId();
+            existingPlayers = List.copyOf(settings.players());
         }
 
-        try {
-            guild.createTextChannel(CHANNEL_NAME)
+        TextChannel channel = channelId == null ? null : guild.getTextChannelById(channelId);
+        if (channel == null && channelId != null && mode == Mode.AUTOMATIC) {
+            return new Result(Status.CHANNEL_DELETED, null, roleId, Set.of(), false);
+        }
+
+        Member self = guild.getSelfMember();
+        EnumSet<Permission> missing = EnumSet.noneOf(Permission.class);
+        for (Permission p : REQUIRED_PERMISSIONS) {
+            if (!self.hasPermission(p)) {
+                missing.add(p);
+            }
+        }
+        if (!missing.isEmpty()) {
+            return new Result(Status.MISSING_PERMISSIONS, channelId, roleId, missing, false);
+        }
+
+        // 1. The role. Created with zero permissions; it only unlocks the lake channel.
+        Role role = roleId == null ? null : guild.getRoleById(roleId);
+        boolean newRole = false;
+        if (role == null) {
+            role = guild.createRole()
+                    .setName(ROLE_NAME)
+                    .setPermissions(0L)
+                    .setMentionable(false)
+                    .setHoisted(false)
+                    .reason("Lets members see Big Hank's lake")
+                    .complete();
+            newRole = true;
+            synchronized (store) {
+                store.guild(guildId).setAnglerRoleId(role.getIdLong());
+                store.save();
+            }
+        }
+        if (!self.canInteract(role)) {
+            return new Result(Status.ROLE_TOO_HIGH, channelId, role.getIdLong(), Set.of(), false);
+        }
+
+        // 2. The channel: reuse ours, adopt one with the right name, or create it already private.
+        if (channel == null && channelId == null) {
+            List<TextChannel> named = guild.getTextChannelsByName(CHANNEL_NAME, true);
+            channel = named.isEmpty() ? null : named.get(0);
+        }
+        boolean created = false;
+        if (channel == null) {
+            long viewBit = Permission.VIEW_CHANNEL.getRawValue();
+            channel = guild.createTextChannel(CHANNEL_NAME)
                     .setTopic(CHANNEL_TOPIC)
+                    .addMemberPermissionOverride(self.getIdLong(), viewBit, 0)
+                    .addRolePermissionOverride(role.getIdLong(), viewBit, 0)
+                    .addRolePermissionOverride(guild.getPublicRole().getIdLong(), 0, viewBit)
                     .reason("Big Hank's fishing channel")
-                    .queue(channel -> {
-                        synchronized (store) {
-                            store.guild(guildId).setFishingChannelId(channel.getIdLong());
-                            store.save();
-                        }
-                        creating.remove(guildId);
-                        onDone.accept(new Result(Status.CREATED, channel.getIdLong()));
-                    }, error -> {
-                        creating.remove(guildId);
-                        LOG.warn("Couldn't create #{} in server {}", CHANNEL_NAME, guildId, error);
-                        onDone.accept(new Result(Status.FAILED, null));
-                    });
-        } catch (RuntimeException e) { // e.g. permissions changed between the check and the request
-            creating.remove(guildId);
-            LOG.warn("Couldn't create #{} in server {}", CHANNEL_NAME, guildId, e);
-            onDone.accept(new Result(Status.FAILED, null));
+                    .complete();
+            created = true;
+        } else {
+            makePrivate(guild, channel, role);
+        }
+        synchronized (store) {
+            store.guild(guildId).setFishingChannelId(channel.getIdLong());
+            store.save();
+        }
+
+        // 3. If the role is new (first upgrade to a private lake, or someone deleted it), give it back to
+        //    everyone who had already joined so nobody gets locked out.
+        if (newRole) {
+            for (long userId : existingPlayers) {
+                guild.addRoleToMember(UserSnowflake.fromId(userId), role).reason("Already a Big Hank angler")
+                        .queue(null, error -> LOG.debug("Couldn't restore angler role for {}", userId, error));
+            }
+        }
+        return new Result(Status.READY, channel.getIdLong(), role.getIdLong(), Set.of(), created);
+    }
+
+    /** Hides an existing channel from everyone except anglers and Big Hank. Skips anything already right. */
+    private static void makePrivate(Guild guild, TextChannel channel, Role role) {
+        // Let Big Hank and anglers in *before* locking @everyone out, so Big Hank never loses access mid-way.
+        allowView(channel, guild.getSelfMember());
+        allowView(channel, role);
+        PermissionOverride everyone = channel.getPermissionOverride(guild.getPublicRole());
+        if (everyone == null || !everyone.getDenied().contains(Permission.VIEW_CHANNEL)) {
+            channel.upsertPermissionOverride(guild.getPublicRole()).deny(Permission.VIEW_CHANNEL)
+                    .reason("Only Big Hank's anglers can see the lake").complete();
+        }
+        String topic = channel.getTopic();
+        if (topic == null || topic.isBlank()) {
+            channel.getManager().setTopic(CHANNEL_TOPIC).complete();
+        }
+    }
+
+    private static void allowView(TextChannel channel, IPermissionHolder holder) {
+        PermissionOverride override = channel.getPermissionOverride(holder);
+        if (override == null || !override.getAllowed().contains(Permission.VIEW_CHANNEL)) {
+            channel.upsertPermissionOverride(holder).grant(Permission.VIEW_CHANNEL)
+                    .reason("Big Hank's lake access").complete();
         }
     }
 
     private static void logResult(Guild guild, Result result) {
         switch (result.status()) {
-            case CREATED -> LOG.info("Created #{} in server {}", CHANNEL_NAME, guild.getId());
-            case ADOPTED -> LOG.info("Using existing #{} in server {}", CHANNEL_NAME, guild.getId());
-            case MISSING_PERMISSION -> LOG.warn("No Manage Channels permission in server {}; "
-                    + "a server manager can grant it and run /setup", guild.getId());
-            default -> { }
+            case READY -> {
+                if (result.channelCreated()) {
+                    LOG.info("Created #{} in server {}", CHANNEL_NAME, guild.getId());
+                }
+            }
+            case MISSING_PERMISSIONS -> LOG.warn("Server {} is missing permissions {}; a server manager needs to "
+                    + "grant them (or re-invite Big Hank) and run /setup", guild.getId(), result.missing());
+            case ROLE_TOO_HIGH -> LOG.warn("In server {}, the {} role is above Big Hank's role", guild.getId(), ROLE_NAME);
+            case CHANNEL_DELETED -> LOG.info("#{} was deleted in server {}; waiting for /setup",
+                    CHANNEL_NAME, guild.getId());
+            case FAILED -> LOG.warn("Couldn't set up the lake in server {}", guild.getId());
         }
     }
 }

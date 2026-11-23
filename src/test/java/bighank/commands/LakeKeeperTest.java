@@ -1,37 +1,56 @@
 package bighank.commands;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.RETURNS_SELF;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import bighank.commands.LakeKeeper.Mode;
 import bighank.commands.LakeKeeper.Result;
 import bighank.commands.LakeKeeper.Status;
 import bighank.data.GameStore;
 import java.io.IOException;
 import java.nio.file.Path;
-import java.util.ArrayList;
+import java.util.EnumSet;
 import java.util.List;
-import java.util.function.Consumer;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 import net.dv8tion.jda.api.Permission;
 import net.dv8tion.jda.api.entities.Guild;
+import net.dv8tion.jda.api.entities.IPermissionHolder;
+import net.dv8tion.jda.api.entities.PermissionOverride;
+import net.dv8tion.jda.api.entities.Role;
 import net.dv8tion.jda.api.entities.SelfMember;
+import net.dv8tion.jda.api.entities.UserSnowflake;
 import net.dv8tion.jda.api.entities.channel.concrete.TextChannel;
+import net.dv8tion.jda.api.managers.channel.concrete.TextChannelManager;
+import net.dv8tion.jda.api.requests.restaction.AuditableRestAction;
 import net.dv8tion.jda.api.requests.restaction.ChannelAction;
+import net.dv8tion.jda.api.requests.restaction.PermissionOverrideAction;
+import net.dv8tion.jda.api.requests.restaction.RoleAction;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.mockito.InOrder;
 
+/** Exercises LakeKeeper against a mocked Discord server. */
 class LakeKeeperTest {
     private static final long GUILD = 1L;
+    private static final long SELF = 900L;
+    private static final long EVERYONE = GUILD; // @everyone's role id is the server id
+    private static final long NEW_ROLE = 300L;
     private static final long NEW_CHANNEL = 500L;
+    private static final long VIEW = Permission.VIEW_CHANNEL.getRawValue();
 
     @TempDir
     Path dir;
@@ -40,8 +59,11 @@ class LakeKeeperTest {
     private LakeKeeper keeper;
     private Guild guild;
     private SelfMember self;
-    private ChannelAction<TextChannel> createAction;
-    private final List<Result> results = new ArrayList<>();
+    private Role everyone;
+    private Role newRole;
+    private RoleAction roleAction;
+    private ChannelAction<TextChannel> channelAction;
+    private AuditableRestAction<Void> addRoleAction;
 
     @BeforeEach
     @SuppressWarnings("unchecked")
@@ -50,21 +72,36 @@ class LakeKeeperTest {
         keeper = new LakeKeeper(store);
 
         guild = mock(Guild.class);
-        self = mock(SelfMember.class);
         when(guild.getIdLong()).thenReturn(GUILD);
-        when(guild.getSelfMember()).thenReturn(self);
         when(guild.getTextChannelsByName(anyString(), eq(true))).thenReturn(List.of());
 
-        // createTextChannel(...).setTopic(...).reason(...).queue(success, failure) "succeeds" with a new channel
+        self = mock(SelfMember.class);
+        when(self.getIdLong()).thenReturn(SELF);
+        when(self.hasPermission(any(Permission.class))).thenReturn(true);
+        when(self.canInteract(any(Role.class))).thenReturn(true);
+        when(guild.getSelfMember()).thenReturn(self);
+
+        everyone = role(EVERYONE);
+        when(guild.getPublicRole()).thenReturn(everyone);
+
+        newRole = role(NEW_ROLE);
+        roleAction = mock(RoleAction.class, RETURNS_SELF);
+        when(roleAction.complete()).thenReturn(newRole);
+        when(guild.createRole()).thenReturn(roleAction);
+
         TextChannel created = channel(NEW_CHANNEL);
-        createAction = mock(ChannelAction.class);
-        when(guild.createTextChannel(LakeKeeper.CHANNEL_NAME)).thenReturn(createAction);
-        when(createAction.setTopic(anyString())).thenReturn(createAction);
-        when(createAction.reason(anyString())).thenReturn(createAction);
-        doAnswer(inv -> {
-            ((Consumer<TextChannel>) inv.getArgument(0)).accept(created);
-            return null;
-        }).when(createAction).queue(any(), any());
+        channelAction = mock(ChannelAction.class, RETURNS_SELF);
+        when(channelAction.complete()).thenReturn(created);
+        when(guild.createTextChannel(LakeKeeper.CHANNEL_NAME)).thenReturn(channelAction);
+
+        addRoleAction = mock(AuditableRestAction.class, RETURNS_SELF);
+        when(guild.addRoleToMember(any(UserSnowflake.class), any(Role.class))).thenReturn(addRoleAction);
+    }
+
+    private static Role role(long id) {
+        Role role = mock(Role.class);
+        when(role.getIdLong()).thenReturn(id);
+        return role;
     }
 
     private static TextChannel channel(long id) {
@@ -73,91 +110,147 @@ class LakeKeeperTest {
         return channel;
     }
 
-    private Result ensure() {
-        keeper.ensureLake(guild, results::add);
-        assertEquals(1, results.size(), "callback runs exactly once");
-        return results.remove(0);
+    /** A pre-existing public channel; returns the override action so tests can verify what changed. */
+    private PermissionOverrideAction stubEditableChannel(TextChannel channel) {
+        PermissionOverrideAction overrideAction = mock(PermissionOverrideAction.class, RETURNS_SELF);
+        when(channel.upsertPermissionOverride(any(IPermissionHolder.class))).thenReturn(overrideAction);
+        when(channel.getManager()).thenReturn(mock(TextChannelManager.class, RETURNS_SELF));
+        return overrideAction;
+    }
+
+    private static PermissionOverride override(Set<Permission> allowed, Set<Permission> denied) {
+        PermissionOverride o = mock(PermissionOverride.class);
+        when(o.getAllowed()).thenReturn(allowed.isEmpty() ? EnumSet.noneOf(Permission.class) : EnumSet.copyOf(allowed));
+        when(o.getDenied()).thenReturn(denied.isEmpty() ? EnumSet.noneOf(Permission.class) : EnumSet.copyOf(denied));
+        return o;
+    }
+
+    private static UserSnowflake user(long id) {
+        return argThat(u -> u != null && u.getIdLong() == id);
     }
 
     @Test
-    void createsTheChannelWhenMissing() {
-        when(self.hasPermission(Permission.MANAGE_CHANNEL)).thenReturn(true);
+    void freshServerGetsAPrivateChannelAndAPowerlessRole() {
+        Result result = keeper.ensureNow(guild, Mode.AUTOMATIC);
 
-        Result result = ensure();
-
-        assertEquals(Status.CREATED, result.status());
-        assertEquals(NEW_CHANNEL, result.channelId());
+        assertEquals(Status.READY, result.status());
+        assertTrue(result.channelCreated());
         assertEquals(NEW_CHANNEL, store.guild(GUILD).fishingChannelId());
-        verify(createAction).setTopic(LakeKeeper.CHANNEL_TOPIC);
+        assertEquals(NEW_ROLE, store.guild(GUILD).anglerRoleId());
+
+        verify(roleAction).setName(LakeKeeper.ROLE_NAME);
+        verify(roleAction).setPermissions(0L); // the role grants nothing server-wide
+        verify(channelAction).addRolePermissionOverride(EVERYONE, 0, VIEW); // hidden from everyone...
+        verify(channelAction).addRolePermissionOverride(NEW_ROLE, VIEW, 0); // ...except anglers...
+        verify(channelAction).addMemberPermissionOverride(SELF, VIEW, 0); // ...and Big Hank
     }
 
     @Test
-    void reusesItsExistingChannel() {
-        store.guild(GUILD).setFishingChannelId(42L);
+    void existingPublicChannelIsMadePrivateWithoutLockingBigHankOut() {
         TextChannel existing = channel(42L);
-        when(guild.getTextChannelById(42L)).thenReturn(existing);
+        when(guild.getTextChannelsByName(LakeKeeper.CHANNEL_NAME, true)).thenReturn(List.of(existing));
+        PermissionOverrideAction overrideAction = stubEditableChannel(existing);
 
-        Result result = ensure();
+        Result result = keeper.ensureNow(guild, Mode.AUTOMATIC);
 
-        assertEquals(Status.ALREADY_EXISTS, result.status());
+        assertEquals(Status.READY, result.status());
+        assertEquals(42L, store.guild(GUILD).fishingChannelId());
         verify(guild, never()).createTextChannel(anyString());
+
+        InOrder order = inOrder(existing);
+        order.verify(existing).upsertPermissionOverride(self);
+        order.verify(existing).upsertPermissionOverride(newRole);
+        order.verify(existing).upsertPermissionOverride(everyone); // @everyone is locked out last
+        verify(overrideAction).deny(Permission.VIEW_CHANNEL);
     }
 
     @Test
-    void adoptsAChannelThatAlreadyHasTheName() {
-        TextChannel named = channel(77L);
-        when(guild.getTextChannelsByName(LakeKeeper.CHANNEL_NAME, true)).thenReturn(List.of(named));
+    void playersWhoJoinedBeforeThePrivateLakeKeepAccess() {
+        store.guild(GUILD).join(11L);
+        store.guild(GUILD).join(22L);
 
-        Result result = ensure();
+        keeper.ensureNow(guild, Mode.AUTOMATIC);
 
-        assertEquals(Status.ADOPTED, result.status());
-        assertEquals(77L, store.guild(GUILD).fishingChannelId());
-        verify(guild, never()).createTextChannel(anyString());
+        verify(guild).addRoleToMember(user(11L), eq(newRole));
+        verify(guild).addRoleToMember(user(22L), eq(newRole));
     }
 
     @Test
-    void recreatesADeletedChannelWhenAsked() {
-        store.guild(GUILD).setFishingChannelId(42L); // channel 42 no longer exists
+    void alreadyPrivateLakeNeedsNoChanges() {
+        TextChannel lake = channel(42L);
+        Role angler = role(77L);
+        store.guild(GUILD).setFishingChannelId(42L);
+        store.guild(GUILD).setAnglerRoleId(77L);
+        when(guild.getTextChannelById(42L)).thenReturn(lake);
+        when(guild.getRoleById(77L)).thenReturn(angler);
+        when(lake.getTopic()).thenReturn("already has a topic");
+        PermissionOverride allowView = override(Set.of(Permission.VIEW_CHANNEL), Set.of());
+        PermissionOverride denyView = override(Set.of(), Set.of(Permission.VIEW_CHANNEL));
+        when(lake.getPermissionOverride(self)).thenReturn(allowView);
+        when(lake.getPermissionOverride(angler)).thenReturn(allowView);
+        when(lake.getPermissionOverride(everyone)).thenReturn(denyView);
+
+        Result result = keeper.ensureNow(guild, Mode.AUTOMATIC);
+
+        assertEquals(Status.READY, result.status());
+        verify(guild, never()).createRole();
+        verify(guild, never()).createTextChannel(anyString());
+        verify(lake, never()).upsertPermissionOverride(any(IPermissionHolder.class));
+    }
+
+    @Test
+    void deletedChannelStaysDeletedUntilSetup() {
+        store.guild(GUILD).setFishingChannelId(42L); // no longer exists
         when(guild.getTextChannelById(anyLong())).thenReturn(null);
-        when(self.hasPermission(Permission.MANAGE_CHANNEL)).thenReturn(true);
 
-        Result result = ensure();
+        assertEquals(Status.CHANNEL_DELETED, keeper.ensureNow(guild, Mode.AUTOMATIC).status());
+        verify(guild, never()).createTextChannel(anyString());
 
-        assertEquals(Status.CREATED, result.status());
+        Result rebuilt = keeper.ensureNow(guild, Mode.REBUILD);
+        assertEquals(Status.READY, rebuilt.status());
+        assertTrue(rebuilt.channelCreated());
         assertEquals(NEW_CHANNEL, store.guild(GUILD).fishingChannelId());
     }
 
     @Test
-    void reportsMissingPermissionWithoutTrying() {
-        when(self.hasPermission(Permission.MANAGE_CHANNEL)).thenReturn(false);
+    void missingPermissionsAreReportedBeforeChangingAnything() {
+        when(self.hasPermission(Permission.MANAGE_ROLES)).thenReturn(false);
 
-        Result result = ensure();
+        Result result = keeper.ensureNow(guild, Mode.AUTOMATIC);
 
-        assertEquals(Status.MISSING_PERMISSION, result.status());
-        assertNull(store.guild(GUILD).fishingChannelId());
+        assertEquals(Status.MISSING_PERMISSIONS, result.status());
+        assertEquals(Set.of(Permission.MANAGE_ROLES), result.missing());
+        verify(guild, never()).createRole();
         verify(guild, never()).createTextChannel(anyString());
     }
 
     @Test
-    @SuppressWarnings("unchecked")
-    void reportsFailureAndCanRetry() {
-        when(self.hasPermission(Permission.MANAGE_CHANNEL)).thenReturn(true);
-        doAnswer(inv -> {
-            ((Consumer<Throwable>) inv.getArgument(1)).accept(new RuntimeException("discord said no"));
-            return null;
-        }).when(createAction).queue(any(), any());
+    void roleAboveBigHankIsReported() {
+        when(self.canInteract(any(Role.class))).thenReturn(false);
 
-        assertEquals(Status.FAILED, ensure().status());
-        assertEquals(Status.FAILED, ensure().status(), "a failure doesn't leave the server stuck 'in progress'");
+        assertEquals(Status.ROLE_TOO_HIGH, keeper.ensureNow(guild, Mode.AUTOMATIC).status());
+        verify(guild, never()).createTextChannel(anyString());
     }
 
     @Test
-    void doesNotCreateTwiceWhileARequestIsInFlight() {
-        when(self.hasPermission(Permission.MANAGE_CHANNEL)).thenReturn(true);
-        doAnswer(inv -> null).when(createAction).queue(any(), any()); // never completes
+    void addAnglerGivesThePlayerTheRole() throws Exception {
+        when(guild.getRoleById(NEW_ROLE)).thenReturn(newRole);
+        CompletableFuture<Result> done = new CompletableFuture<>();
 
-        keeper.ensureLake(guild, results::add); // starts creating, no result yet
-        assertEquals(0, results.size());
-        assertEquals(Status.IN_PROGRESS, ensure().status());
+        keeper.addAngler(guild, 55L, done::complete);
+
+        assertEquals(Status.READY, done.get(5, TimeUnit.SECONDS).status());
+        verify(guild).addRoleToMember(user(55L), eq(newRole));
+        verify(addRoleAction).complete();
+    }
+
+    @Test
+    void failuresAreReportedInsteadOfThrown() throws Exception {
+        when(roleAction.complete()).thenThrow(new RuntimeException("discord said no"));
+        CompletableFuture<Result> done = new CompletableFuture<>();
+
+        keeper.ensure(guild, Mode.AUTOMATIC, done::complete);
+
+        assertEquals(Status.FAILED, done.get(5, TimeUnit.SECONDS).status());
     }
 }

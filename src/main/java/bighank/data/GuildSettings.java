@@ -3,9 +3,10 @@ package bighank.data;
 import java.util.LinkedHashSet;
 import java.util.Set;
 
-/** Per-server state: which channel Big Hank plays in, and who has joined this server's lake. */
+/** Per-server state: Big Hank's channel and role, and who has joined this server's lake. */
 public final class GuildSettings {
     private Long fishingChannelId;
+    private Long anglerRoleId;
     private Set<Long> players = new LinkedHashSet<>();
 
     public Long fishingChannelId() {
@@ -14,6 +15,15 @@ public final class GuildSettings {
 
     public void setFishingChannelId(long channelId) {
         this.fishingChannelId = channelId;
+    }
+
+    /** The role that lets members see the lake channel. */
+    public Long anglerRoleId() {
+        return anglerRoleId;
+    }
+
+    public void setAnglerRoleId(long roleId) {
+        this.anglerRoleId = roleId;
     }
 
     public boolean hasJoined(long userId) {
