@@ -13,6 +13,7 @@ class BotCommandsTest {
         // JDA validates names, descriptions, and choice limits while building, so this catches typos early.
         List<CommandData> commands = BotCommands.definitions();
         assertEquals(12, commands.size());
+        assertTrue(commands.stream().anyMatch(c -> c.getName().equals("setup")));
         for (CommandData command : commands) {
             assertTrue(command.toData().toString().contains("\"contexts\":[\"0\"]"), command.getName() + " is guild-only");
         }

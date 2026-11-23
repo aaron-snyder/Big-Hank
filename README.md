@@ -7,9 +7,10 @@ better rods and bait. Compete on per-server and global leaderboards.
 
 ## How to play
 
-Big Hank only plays in **one channel per server**, chosen by a server manager. Everywhere else he answers
-privately, so people who aren't playing never get spammed. Players join each server's lake with `/start`.
-Your gear and coins follow you to every server.
+When Big Hank joins a server he creates his own channel, **#big-hanks-lake**, and plays only there.
+Everywhere else he answers privately, so people who aren't playing never get spammed (and anyone who isn't
+playing can simply mute the channel). Players join each server's lake with `/start`. Your gear and coins
+follow you to every server.
 
 | Command | What it does |
 |---|---|
@@ -24,7 +25,7 @@ Your gear and coins follow you to every server.
 | `/leaderboard [scope] [category]` | Top anglers in this server or globally, by CarpCoins earned, biggest catch, or fish caught |
 | `/leave` | Leave this server's lake and its leaderboard (you keep your gear) |
 | `/commands` | List all commands |
-| `/setup [channel]` | Pick Big Hank's channel. Only shown to members with **Manage Server** |
+| `/setup` | Rebuild #big-hanks-lake if it was deleted. Only shown to members with **Manage Server** |
 
 Better rods catch everything the cheaper rods can, plus bigger species:
 
@@ -58,7 +59,8 @@ included `mvnw` / `mvnw.cmd` wrapper downloads it automatically.
 3. Open the **Installation** tab:
    - Under **Installation Contexts**, check **Guild Install** only (uncheck User Install).
    - Under **Default Install Settings → Guild Install**, set scopes to `bot` and `applications.commands`,
-     and leave **Permissions empty**. Big Hank replies through slash commands, which don't need any permissions.
+     and select exactly one permission: **Manage Channels**. That's what lets Big Hank create #big-hanks-lake.
+     He replies through slash commands, which don't need any other permissions.
    - Set **Install Link** to "Discord Provided Link". That link is what you share so people can add the bot.
 
 ### 2. Give the bot its token (privately)
@@ -88,17 +90,22 @@ macOS / Linux:
 java -jar target/BigHank.jar
 ```
 
-When it's working you'll see `Big Hank is on the lake as ...` and an invite link in the console.
+When it's working you'll see `Big Hank is on the lake as ...` and an invite link in the console
+(it requests only Manage Channels).
 Player progress is saved to `data/inventories.json` after every action. Back that file up occasionally.
 
 ### 4. Add it to a server
 
-1. Open the invite link (from the console or the Installation tab) and pick a server where you have
-   **Manage Server**.
-2. Create a channel for the game, e.g. `#big-hank`. Optionally make it opt-in so only players see it
-   (for example, put it behind a role, or use Discord's **Channels & Roles** onboarding).
-3. In that channel, run `/setup`. Big Hank will now only play there.
-4. Players run `/start` in that channel to join.
+1. Open the invite link (from the console or the Installation tab), pick a server where you have
+   **Manage Server**, and keep **Manage Channels** checked.
+2. Big Hank creates **#big-hanks-lake** right away. Its topic tells people how to play. If a channel with
+   that name already exists, he uses it instead of making a second one.
+3. Players run `/start` in #big-hanks-lake to join.
+
+Optional: drag the channel into whatever category you like, or adjust who can see it. Big Hank doesn't
+mind. If someone deletes the channel, Big Hank won't recreate it on his own; a server manager can run
+`/setup` to bring it back. If the bot was invited without Manage Channels, grant it to his role and
+run `/setup`.
 
 Slash commands can take a minute to appear the first time the bot starts. If they don't show up,
 restart your Discord app (Ctrl+R).
@@ -154,9 +161,15 @@ policy short. Because Big Hank uses no privileged intents, verification doesn't 
 - **If your token ever leaks,** go to Developer Portal → Bot → **Reset Token** immediately. The old token
   stops working the moment you reset it.
 - **Least privilege:**
-  - **Zero gateway intents.** The bot can't read messages, see member lists, or watch presences. Slash
-    commands don't need any of that.
-  - **Zero permissions.** The invite link asks for no permissions. Interaction replies work without them.
+  - **No optional gateway intents.** Only the basic, non-privileged `GUILDS` intent, which JDA always uses.
+    It tells Big Hank when he joins or leaves a server and which channels exist. The bot can't read messages,
+    see member lists, or watch presences.
+  - **One permission: Manage Channels.** It's needed to create #big-hanks-lake. Big Hank doesn't need Send
+    Messages, because slash-command replies work without it, and the channel topic explains how to join. Server
+    owners who want even less can remove Manage Channels from his role once the channel exists. Everything
+    keeps working, and `/setup` will just ask for it back if the channel ever needs recreating.
+  - **Respects deletions.** If a server deletes #big-hanks-lake, Big Hank never recreates it on his own.
+  - **Forgets servers that remove him.** That server's settings are deleted when he's kicked.
   - **`/setup` is restricted to Manage Server.** Discord hides it from everyone else, and the bot
     re-checks the permission when it runs.
   - **Guild-only commands.** Nothing works in DMs or group chats.
@@ -173,6 +186,7 @@ src/main/java/bighank/
 ├── BigHank.java            Startup: reads config, connects to Discord, registers commands
 ├── Config.java             Reads DISCORD_TOKEN etc. from the environment or .env
 ├── commands/BotCommands.java   Every slash command
+├── commands/LakeKeeper.java    Creates #big-hanks-lake when Big Hank joins a server
 ├── data/GameStore.java     Saves/loads players and server settings (JSON)
 ├── data/GuildSettings.java Per-server channel and member list
 └── game/                   The game rules: Inventory, Fish, Rod, Bait, Species, Leaderboard

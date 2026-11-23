@@ -18,7 +18,6 @@ import java.util.Random;
 import net.dv8tion.jda.api.EmbedBuilder;
 import net.dv8tion.jda.api.Permission;
 import net.dv8tion.jda.api.entities.MessageEmbed;
-import net.dv8tion.jda.api.entities.channel.ChannelType;
 import net.dv8tion.jda.api.events.interaction.command.SlashCommandInteractionEvent;
 import net.dv8tion.jda.api.hooks.ListenerAdapter;
 import net.dv8tion.jda.api.interactions.InteractionContextType;
@@ -36,9 +35,9 @@ import org.slf4j.LoggerFactory;
 /**
  * Every slash command Big Hank understands.
  *
- * <p>Big Hank only plays in one channel per server, picked by a server manager with {@code /setup}. Anywhere
- * else he answers privately (ephemeral replies only the player can see), so people who aren't playing never get
- * spammed. Players opt in to each server's lake with {@code /start}.
+ * <p>Big Hank only plays in his own channel, {@code #big-hanks-lake}, which {@link LakeKeeper} creates when he joins
+ * a server. Anywhere else he answers privately (ephemeral replies only the player can see), so people who aren't
+ * playing never get spammed. Players opt in to each server's lake with {@code /start}.
  */
 public class BotCommands extends ListenerAdapter {
     private static final Logger LOG = LoggerFactory.getLogger(BotCommands.class);
@@ -46,10 +45,12 @@ public class BotCommands extends ListenerAdapter {
     private static final int LEADERBOARD_SIZE = 10;
 
     private final GameStore store;
+    private final LakeKeeper lakeKeeper;
     private final Random rng = new Random();
 
-    public BotCommands(GameStore store) {
+    public BotCommands(GameStore store, LakeKeeper lakeKeeper) {
         this.store = store;
+        this.lakeKeeper = lakeKeeper;
     }
 
     // ================================================================ command definitions
@@ -100,9 +101,7 @@ public class BotCommands extends ListenerAdapter {
                 Commands.slash("leaderboard", "See the top anglers").addOptions(scopeOption, categoryOption),
                 Commands.slash("leave", "Leave this server's lake and its leaderboard (you keep your gear)"),
                 Commands.slash("commands", "List everything Big Hank can do"),
-                Commands.slash("setup", "Pick the channel Big Hank fishes in (server managers only)")
-                        .addOptions(new OptionData(OptionType.CHANNEL, "channel", "Defaults to this channel")
-                                .setChannelTypes(ChannelType.TEXT))
+                Commands.slash("setup", "Rebuild #" + LakeKeeper.CHANNEL_NAME + " if it's missing (server managers only)")
                         // Hidden from everyone without Manage Server; also re-checked when it runs.
                         .setDefaultPermissions(DefaultMemberPermissions.enabledFor(Permission.MANAGE_SERVER)));
 
@@ -182,14 +181,28 @@ public class BotCommands extends ListenerAdapter {
     }
 
     private static void requireFishingChannel(SlashCommandInteractionEvent event, GuildSettings guild) {
-        Long channelId = guild.fishingChannelId();
-        if (channelId == null) {
-            throw new GameException("This server hasn't picked a fishin' hole yet. Someone with **Manage Server** "
-                    + "needs to run `/setup` in the channel Big Hank should use.");
+        String problem = lakeProblem(event, guild);
+        if (problem != null) {
+            throw new GameException(problem);
         }
+        long channelId = guild.fishingChannelId();
         if (event.getChannelIdLong() != channelId) {
             throw new GameException("Big Hank only fishes in <#" + channelId + ">. Head on over there!");
         }
+    }
+
+    /** Why this server's lake isn't usable, or null if it's fine. */
+    private static String lakeProblem(SlashCommandInteractionEvent event, GuildSettings guild) {
+        Long channelId = guild.fishingChannelId();
+        if (channelId == null) {
+            return "Big Hank hasn't dug his lake here yet. He needs the **Manage Channels** permission; once he has "
+                    + "it, a server manager can run `/setup`.";
+        }
+        if (event.getGuild().getTextChannelById(channelId) == null) {
+            return "Big Hank's lake was drained (the channel was deleted). A server manager can run `/setup` "
+                    + "to dig a new one.";
+        }
+        return null;
     }
 
     private Inventory requirePlayer(SlashCommandInteractionEvent event, GuildSettings guild) {
@@ -211,22 +224,23 @@ public class BotCommands extends ListenerAdapter {
             throw new GameException("Only folks with **Manage Server** can set up Big Hank.");
         }
 
-        // Discord only lets people pick text channels here (see setChannelTypes), so the raw id is all we need.
-        long channelId;
-        Long picked = event.getOption("channel", OptionMapping::getAsLong);
-        if (picked != null) {
-            channelId = picked;
-        } else if (event.getChannelType() == ChannelType.TEXT) {
-            channelId = event.getChannelIdLong();
-        } else {
-            throw new GameException("Run `/setup` in a regular text channel, or pick one with the `channel` option.");
-        }
-
-        guild.setFishingChannelId(channelId);
-        store.save();
-        replyPrivately(event, "🎣 Big Hank will fish in <#" + channelId + ">. Everywhere else he'll stay quiet.\n"
-                + "Let your server know: head to <#" + channelId + "> and type `/start` to join!\n"
-                + "-# Tip: make that channel opt-in (e.g. a role or Channels & Roles) so non-players never see it.");
+        // Creating a channel can take a moment, so acknowledge first and answer when it's done.
+        event.deferReply(true).queue();
+        lakeKeeper.ensureLake(event.getGuild(), result -> {
+            String channel = result.channelId() == null ? null : "<#" + result.channelId() + ">";
+            String message = switch (result.status()) {
+                case ALREADY_EXISTS -> "Big Hank's already fishin' in " + channel + ". Nothing to do!";
+                case ADOPTED -> "Found an existing #" + LakeKeeper.CHANNEL_NAME + ", so Big Hank moved into "
+                        + channel + ".";
+                case CREATED -> "🎣 Dug a fresh lake: " + channel + "! Players can head there and type `/start`.";
+                case MISSING_PERMISSION -> "Big Hank needs the **Manage Channels** permission to dig his lake. "
+                        + "Give his role that permission (Server Settings → Roles), then run `/setup` again.";
+                case IN_PROGRESS -> "Big Hank's already digging the lake. Give him a second.";
+                case FAILED -> "Discord wouldn't let Big Hank create the channel. Check his **Manage Channels** "
+                        + "permission and try again.";
+            };
+            event.getHook().sendMessage(message).queue();
+        });
     }
 
     private void start(SlashCommandInteractionEvent event, GuildSettings guild) {
@@ -462,9 +476,8 @@ public class BotCommands extends ListenerAdapter {
     }
 
     private void commands(SlashCommandInteractionEvent event, GuildSettings guild) {
-        String where = guild.fishingChannelId() == null
-                ? "This server hasn't picked a fishin' hole yet. A server manager can run `/setup`."
-                : "Big Hank fishes in <#" + guild.fishingChannelId() + ">.";
+        String problem = lakeProblem(event, guild);
+        String where = problem != null ? problem : "Big Hank fishes in <#" + guild.fishingChannelId() + ">.";
         replyPrivately(event, where + "\n\n"
                 + "`/start`: Get your fishin' license and join this server's lake\n"
                 + "`/fish [rod]`: Cast a line (uses your best rod unless you pick one)\n"
@@ -476,7 +489,7 @@ public class BotCommands extends ListenerAdapter {
                 + "`/sell`: Sell all your fish, 1 CarpCoin per inch\n"
                 + "`/leaderboard [scope] [category]`: Top anglers here or everywhere\n"
                 + "`/leave`: Leave this server's lake (you keep your gear)\n"
-                + "`/setup [channel]`: Pick Big Hank's channel (server managers)");
+                + "`/setup`: Rebuild #" + LakeKeeper.CHANNEL_NAME + " if it was deleted (server managers)");
     }
 
     // ================================================================ helpers

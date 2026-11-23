@@ -1,12 +1,14 @@
 package bighank;
 
 import bighank.commands.BotCommands;
+import bighank.commands.LakeKeeper;
 import bighank.data.GameStore;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.EnumSet;
 import net.dv8tion.jda.api.JDA;
 import net.dv8tion.jda.api.JDABuilder;
+import net.dv8tion.jda.api.Permission;
 import net.dv8tion.jda.api.entities.Activity;
 import net.dv8tion.jda.api.entities.Message;
 import net.dv8tion.jda.api.exceptions.InvalidTokenException;
@@ -37,11 +39,14 @@ public final class BigHank {
 
         JDA jda;
         try {
-            // Least privilege: slash commands need no gateway intents at all, so we request none.
-            // No message content, no member list, no presences. createLight also turns off every cache.
+            // Least privilege: no optional gateway intents. JDA always uses the basic, non-privileged GUILDS
+            // intent, which tells Big Hank when he joins or leaves a server and which channels exist (all he needs
+            // to manage #big-hanks-lake). No message content, no member list, no presences. createLight also
+            // turns off every optional cache.
+            LakeKeeper lakeKeeper = new LakeKeeper(store);
             jda = JDABuilder.createLight(token, EnumSet.noneOf(GatewayIntent.class))
                     .setActivity(Activity.playing("bantz-big-bass-fishing"))
-                    .addEventListeners(new BotCommands(store))
+                    .addEventListeners(lakeKeeper, new BotCommands(store, lakeKeeper))
                     .build();
             jda.awaitReady();
         } catch (InvalidTokenException e) {
@@ -56,8 +61,9 @@ public final class BigHank {
                 err -> LOG.error("Failed to register slash commands", err));
 
         LOG.info("Big Hank is on the lake as {}", jda.getSelfUser().getName());
-        LOG.info("Invite link (no permissions needed): https://discord.com/oauth2/authorize?client_id={}"
-                + "&scope=bot+applications.commands&permissions=0", jda.getSelfUser().getApplicationId());
+        // The only permission Big Hank asks for is Manage Channels, to create #big-hanks-lake.
+        LOG.info("Invite link: https://discord.com/oauth2/authorize?client_id={}&scope=bot+applications.commands"
+                + "&permissions={}", jda.getSelfUser().getApplicationId(), Permission.MANAGE_CHANNEL.getRawValue());
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             LOG.info("Shutting down, saving the lake...");

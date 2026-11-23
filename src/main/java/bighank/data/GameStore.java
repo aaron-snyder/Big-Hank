@@ -125,4 +125,9 @@ public final class GameStore {
     public GuildSettings guild(long guildId) {
         return data.guilds.computeIfAbsent(guildId, id -> new GuildSettings());
     }
+
+    /** Forgets a server entirely (Big Hank was removed from it). Players keep their global progress. */
+    public void removeGuild(long guildId) {
+        data.guilds.remove(guildId);
+    }
 }
