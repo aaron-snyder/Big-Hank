@@ -112,9 +112,34 @@ restart your Discord app (Ctrl+R).
 
 ### 5. Keep it online 24/7
 
-The bot is only online while the program is running. For an always-on bot, run it on a machine that
-stays on: a cheap VPS, a free cloud tier (e.g. Oracle Cloud Always Free), a Raspberry Pi, or a hosting
-service that runs Docker containers. A `Dockerfile` is included:
+The bot is only online while the program is running. For an always-on bot, run it on a machine or
+service that stays on.
+
+#### Railway (recommended)
+
+Railway builds the included `Dockerfile` straight from GitHub and redeploys on every push to `main`.
+
+1. **Push the code to GitHub:** `git push origin main`.
+2. **Create the service.** In [Railway](https://railway.com), click **New Project → Deploy from GitHub repo**.
+   Authorize the Railway GitHub app for this repo, then select it. Railway starts a first build right away;
+   it's expected to fail until the token is added.
+3. **Add the token.** Click the service → **Variables** → **New Variable**, with name `DISCORD_TOKEN` and your
+   bot token as the value. Don't set `DATA_FILE`; the default is what the volume expects.
+4. **Add a volume.** Right-click the service on the project canvas (or press `Ctrl/Cmd + K` and search
+   "volume") → **Attach Volume**, with mount path **`/app/data`**. Without this, everyone's progress is wiped
+   on every deploy.
+5. **Check the settings.** In the service's **Settings**, keep **Serverless** off, keep **Replicas** at 1
+   (two copies of the bot would fight over the save file), and leave the restart policy at **On Failure**.
+6. **Deploy.** Click **Deploy** (or push a commit). In the deployment's logs, wait for
+   `Big Hank is on the lake as ...`. The invite link is printed right below it.
+
+The container fixes the volume's ownership at startup, then runs the bot as an unprivileged user. You
+don't need `RAILWAY_RUN_UID=0`; don't set it. Memory is capped with `JAVA_OPTS=-Xmx256m` to keep the bill
+low. Override that variable in Railway if you ever need more.
+
+#### Docker anywhere else
+
+On a VPS, a Raspberry Pi, or any host that runs Docker containers:
 
 ```bash
 docker build -t bighank .
@@ -176,7 +201,8 @@ policy short. Because Big Hank uses no privileged intents, verification doesn't 
   - **No pings.** Mentions are disabled globally, so a player named `@everyone` can't ping anyone.
   - **No admin-only data commands are exposed to players.** The old `/save` and `/load`, which any player
     could run, are gone. Saving is automatic.
-  - **Unprivileged container.** The Docker image runs as an unprivileged user.
+  - **Unprivileged container.** The Docker image only uses root long enough to take ownership of the data
+    volume, then drops to an unprivileged user before the bot starts.
 - `data/` is git-ignored too, since it contains Discord user IDs.
 
 ## Project layout
