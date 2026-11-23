@@ -10,6 +10,7 @@ import bighank.game.Rod;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
 import java.util.Random;
 import java.util.Set;
 import java.util.function.Supplier;
@@ -106,9 +107,7 @@ public class BotCommands extends ListenerAdapter {
                         case "store" -> event.reply(Views.store(inv, userId, null)).setEphemeral(true).queue();
                         case "profile" -> profile(event, inv);
                         case "leaderboard" -> event.reply(Views.leaderboard(
-                                        Leaderboard.rank(store.playersIn(event.getGuild().getIdLong()),
-                                                Leaderboard.Category.EARNINGS),
-                                        userId, false, Leaderboard.Category.EARNINGS))
+                                        Leaderboard.rank(store.playersIn(event.getGuild().getIdLong())), userId, false))
                                 .setEphemeral(true).queue();
                         default -> replyPrivately(event, "Big Hank doesn't know that one.");
                     }
@@ -136,6 +135,7 @@ public class BotCommands extends ListenerAdapter {
                         inv.setName(user.getEffectiveName());
                         settings.join(user.getIdLong());
                         store.save();
+                        lakeKeeper.refreshFishGod(guild); // a returning angler may hold the biggest catch here
                         yield Views.welcome(inv.name(), result.channelId(), newPlayer, alreadyJoined);
                     }
                     case MISSING_PERMISSIONS -> "Big Hank can't open his lake yet. He's missing the "
@@ -181,23 +181,51 @@ public class BotCommands extends ListenerAdapter {
         if (baitChoice != null) {
             inv.equipBait(parseBait(baitChoice));
         }
+        event.reply(castAndShow(event.getGuild(), inv, event.getUser().getIdLong(), 0, 0)).queue();
+    }
+
+    /**
+     * Casts with the player's best rod and builds the catch message. If the catch is a personal best, it may change
+     * who is Fish God in any server the player has joined, so those roles get refreshed too.
+     */
+    private MessageCreateData castAndShow(Guild guild, Inventory inv, long userId, long tripFish, long tripTenths) {
+        long guildId = guild.getIdLong();
+        boolean wasFishGod = Objects.equals(fishGodOf(guildId), userId);
         Inventory.Catch c = inv.cast(inv.bestRod(), System.currentTimeMillis(), rng);
         store.save();
-        event.reply(Views.catchMessage(inv, event.getUser().getIdLong(), c, 1, c.fish().size())).queue();
+        boolean isFishGod = Objects.equals(fishGodOf(guildId), userId);
+        if (c.personalBest()) {
+            for (long joinedGuildId : store.guildsJoinedBy(userId)) {
+                Guild joined = guild.getJDA().getGuildById(joinedGuildId);
+                if (joined != null) {
+                    lakeKeeper.refreshFishGod(joined);
+                }
+            }
+        }
+        return Views.catchMessage(inv, userId, c, tripFish + 1, tripTenths + Math.round(c.fish().size() * 10),
+                isFishGod, isFishGod && !wasFishGod);
+    }
+
+    /** This server's #1 angler by biggest catch, or null if nobody has caught anything. */
+    private Long fishGodOf(long guildId) {
+        return Leaderboard.leader(store.playersIn(guildId));
     }
 
     private void profile(SlashCommandInteractionEvent event, Inventory self) {
         long viewerId = event.getUser().getIdLong();
         User target = event.getOption("angler", OptionMapping::getAsUser);
+        Long fishGod = fishGodOf(event.getGuild().getIdLong());
         if (target == null || target.getIdLong() == viewerId) {
-            event.reply(Views.profile(self, viewerId, viewerId)).setEphemeral(true).queue();
+            event.reply(Views.profile(self, viewerId, viewerId, Objects.equals(fishGod, viewerId)))
+                    .setEphemeral(true).queue();
             return;
         }
         Inventory other = store.player(target.getIdLong());
         if (other == null) {
             throw new GameException(Views.clean(target.getEffectiveName()) + " hasn't joined Big Hank's Lake yet.");
         }
-        event.reply(Views.profile(other, target.getIdLong(), viewerId)).setEphemeral(true).queue();
+        event.reply(Views.profile(other, target.getIdLong(), viewerId, Objects.equals(fishGod, target.getIdLong())))
+                .setEphemeral(true).queue();
     }
 
     // ================================================================ autocomplete (bait for /fish)
@@ -259,11 +287,7 @@ public class BotCommands extends ListenerAdapter {
             Inventory inv = requirePlayer(event.getMember(), event.getUser(), settings);
             long owner = id.ownerId();
             switch (id.action()) {
-                case ButtonId.CAST -> {
-                    Inventory.Catch c = inv.cast(inv.bestRod(), System.currentTimeMillis(), rng);
-                    store.save();
-                    edit(event, Views.catchMessage(inv, owner, c, id.longArg(0) + 1, id.longArg(1) + c.fish().size()));
-                }
+                case ButtonId.CAST -> edit(event, castAndShow(event.getGuild(), inv, owner, id.longArg(0), id.longArg(1)));
                 case ButtonId.SELL_CATCH -> {
                     Inventory.Sale sale = inv.sellAll();
                     store.save();
@@ -291,10 +315,8 @@ public class BotCommands extends ListenerAdapter {
                 });
                 case ButtonId.LEADERBOARD -> {
                     boolean global = "global".equals(id.arg(0));
-                    Leaderboard.Category category = Leaderboard.Category.valueOf(id.arg(1));
                     edit(event, Views.leaderboard(Leaderboard.rank(
-                                    global ? store.allPlayers() : store.playersIn(event.getGuild().getIdLong()), category),
-                            owner, global, category));
+                            global ? store.allPlayers() : store.playersIn(event.getGuild().getIdLong())), owner, global));
                 }
                 case ButtonId.LEAVE -> leave(event, settings);
                 default -> replyPrivately(event, "That button doesn't do anything anymore.");
@@ -319,6 +341,7 @@ public class BotCommands extends ListenerAdapter {
         settings.leave(userId);
         store.save();
         event.deferEdit().queue();
+        lakeKeeper.refreshFishGod(event.getGuild()); // if they were Fish God, the title passes on
         lakeKeeper.removeAngler(event.getGuild(), userId, result -> event.getHook().editOriginal(
                 new MessageEditBuilder()
                         .setContent("🚪 You've packed up and left the lake, so it's hidden from you and you're off this "

@@ -2,8 +2,10 @@ package bighank.commands;
 
 import bighank.data.GameStore;
 import bighank.data.GuildSettings;
+import bighank.game.Leaderboard;
 import java.util.EnumSet;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -31,6 +33,9 @@ import org.slf4j.LoggerFactory;
  *   <li>a <b>#big-hanks-lake</b> channel that only anglers (and Big Hank) can see.</li>
  * </ul>
  *
+ * <p>It also hands the gold <b>Fish God</b> role to whoever holds the server's biggest catch, and moves it when
+ * someone beats them.
+ *
  * <p>Players get the role with {@code /start}, so nobody who hasn't joined ever sees the channel. If a server
  * manager deletes the channel, Big Hank respects that and only rebuilds it when someone runs {@code /setup}. The
  * role is internal plumbing, so it's quietly recreated whenever it's missing.
@@ -43,6 +48,8 @@ public class LakeKeeper extends ListenerAdapter {
 
     public static final String CHANNEL_NAME = "big-hanks-lake";
     public static final String ROLE_NAME = "Lake Angler";
+    public static final String FISH_GOD_ROLE_NAME = "Fish God";
+    private static final int FISH_GOD_COLOR = 0xF1C40F; // gold
     static final String CHANNEL_TOPIC = "🎣 Big Hank's fishing lake! /fish to cast a line, /store to buy gear "
             + "and sell your catch, /leaderboard for the top anglers. Only people who joined with /start can see this.";
 
@@ -94,6 +101,7 @@ public class LakeKeeper extends ListenerAdapter {
     public void onGuildReady(GuildReadyEvent event) {
         // Catches servers that added Big Hank while he was offline, and upgrades older lakes to private ones.
         ensure(event.getGuild(), Mode.AUTOMATIC, result -> logResult(event.getGuild(), result));
+        refreshFishGod(event.getGuild());
     }
 
     @Override
@@ -138,6 +146,20 @@ public class LakeKeeper extends ListenerAdapter {
                 guild.removeRoleFromMember(UserSnowflake.fromId(userId), role).reason("Left Big Hank's lake").complete();
             }
             return Result.of(Status.READY);
+        });
+    }
+
+    /**
+     * Makes sure the Fish God role belongs to this server's current #1 and nobody else Big Hank gave it to.
+     * Cheap to call often: it only touches Discord when the #1 actually changes.
+     */
+    public void refreshFishGod(Guild guild) {
+        worker.execute(() -> {
+            try {
+                refreshFishGodNow(guild);
+            } catch (RuntimeException e) {
+                LOG.warn("Couldn't update the Fish God in server {}", guild.getId(), e);
+            }
         });
     }
 
@@ -239,6 +261,70 @@ public class LakeKeeper extends ListenerAdapter {
             }
         }
         return new Result(Status.READY, channel.getIdLong(), role.getIdLong(), Set.of(), created);
+    }
+
+    /** Blocking version of {@link #refreshFishGod}. Only call from the worker thread (or tests). */
+    void refreshFishGodNow(Guild guild) {
+        long guildId = guild.getIdLong();
+        Long leader;
+        Long holder;
+        Long roleId;
+        synchronized (store) {
+            GuildSettings settings = store.guild(guildId);
+            leader = Leaderboard.leader(store.playersIn(guildId));
+            holder = settings.fishGodUserId();
+            roleId = settings.fishGodRoleId();
+        }
+        Member self = guild.getSelfMember();
+        if (!self.hasPermission(Permission.MANAGE_ROLES)) {
+            return; // the lake setup already reports missing permissions
+        }
+
+        Role role = roleId == null ? null : guild.getRoleById(roleId);
+        if (role == null) {
+            if (leader == null) {
+                return; // nobody to crown yet
+            }
+            role = guild.createRole()
+                    .setName(FISH_GOD_ROLE_NAME)
+                    .setColor(FISH_GOD_COLOR)
+                    .setPermissions(0L)
+                    .setMentionable(false)
+                    .setHoisted(false)
+                    .reason("Title for the biggest catch in Big Hank's lake")
+                    .complete();
+            holder = null; // a brand-new role isn't held by anyone
+            synchronized (store) {
+                GuildSettings settings = store.guild(guildId);
+                settings.setFishGodRoleId(role.getIdLong());
+                settings.setFishGodUserId(null);
+                store.save();
+            }
+        }
+        if (Objects.equals(leader, holder)) {
+            return;
+        }
+        if (!self.canInteract(role)) {
+            LOG.warn("In server {}, the {} role is above Big Hank's role", guild.getId(), FISH_GOD_ROLE_NAME);
+            return;
+        }
+
+        if (holder != null) {
+            long dethroned = holder;
+            guild.removeRoleFromMember(UserSnowflake.fromId(dethroned), role).reason("Someone caught a bigger fish")
+                    .queue(null, error -> LOG.debug("Couldn't remove Fish God from {}", dethroned, error));
+        }
+        if (leader != null) {
+            try {
+                guild.addRoleToMember(UserSnowflake.fromId(leader), role).reason("Biggest catch in the lake").complete();
+            } catch (RuntimeException e) {
+                LOG.debug("Couldn't give Fish God to {} (they may have left the server)", leader, e);
+            }
+        }
+        synchronized (store) {
+            store.guild(guildId).setFishGodUserId(leader);
+            store.save();
+        }
     }
 
     /** Hides an existing channel from everyone except anglers and Big Hank. Skips anything already right. */

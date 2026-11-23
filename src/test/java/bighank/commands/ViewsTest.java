@@ -51,31 +51,57 @@ class ViewsTest {
     void castAgainCarriesTheTripTotals() {
         Inventory inv = new Inventory("hank");
         Inventory.Catch c = inv.cast(Rod.STARTER, 100_000, new Random(3));
-        MessageCreateData message = Views.catchMessage(inv, OWNER, c, 4, 61);
+        MessageCreateData message = Views.catchMessage(inv, OWNER, c, 4, 613, false, false);
 
-        ButtonId cast = ButtonId.parse(buttons(message).get("cast:4:61").getCustomId());
+        ButtonId cast = ButtonId.parse(buttons(message).get("cast:4:613").getCustomId());
         assertEquals(OWNER, cast.ownerId());
         assertEquals(4, cast.longArg(0));
-        assertEquals(61, cast.longArg(1));
+        assertEquals(613, cast.longArg(1), "trip inches are carried in tenths");
         assertFalse(buttons(message).get("sellcatch").isDisabled());
-        assertTrue(message.getContent().contains("this trip: 4 fish, 61 in"));
+        assertTrue(message.getContent().contains("this trip: 4 fish, 61.3 in"), message.getContent());
+        assertFalse(message.getContent().contains("Fish God"));
+    }
+
+    @Test
+    void catchMessageCrownsTheFishGod() {
+        Inventory inv = new Inventory("hank");
+        Inventory.Catch c = inv.cast(Rod.STARTER, 100_000, new Random(3));
+
+        String holding = Views.catchMessage(inv, OWNER, c, 1, 20, true, false).getContent();
+        assertTrue(holding.startsWith("🎣 👑 Fish God **hank**"), holding);
+        assertFalse(holding.contains("new **Fish God**"));
+
+        String crowned = Views.catchMessage(inv, OWNER, c, 1, 20, true, true).getContent();
+        assertTrue(crowned.contains("is the new **Fish God**"), crowned);
     }
 
     @Test
     void leaderboardTabsHighlightTheCurrentView() {
         // buttons() would also throw on a duplicate id, which Discord rejects
-        Map<String, Button> buttons = buttons(Views.leaderboard(List.of(), OWNER, true, Leaderboard.Category.BIGGEST));
-        assertTrue(buttons.get("lb:global:BIGGEST:scope").isDisabled(), "current scope");
-        assertFalse(buttons.get("lb:server:BIGGEST:scope").isDisabled());
-        assertTrue(buttons.get("lb:global:BIGGEST:category").isDisabled(), "current category");
-        assertFalse(buttons.get("lb:global:CATCHES:category").isDisabled());
+        Map<String, Button> buttons = buttons(Views.leaderboard(List.of(), OWNER, true));
+        assertEquals(2, buttons.size());
+        assertTrue(buttons.get("lb:global").isDisabled(), "current scope");
+        assertFalse(buttons.get("lb:server").isDisabled());
+    }
+
+    @Test
+    void serverLeaderIsShownAsFishGodButGlobalLeaderIsNot() {
+        Inventory inv = new Inventory("hank");
+        inv.cast(Rod.STARTER, 100_000, new Random(3));
+        List<Leaderboard.Entry> ranking = Leaderboard.rank(Map.of(OWNER, inv));
+
+        String server = Views.leaderboard(ranking, OWNER, false).getEmbeds().get(0).getDescription();
+        String global = Views.leaderboard(ranking, OWNER, true).getEmbeds().get(0).getDescription();
+        assertTrue(server.startsWith("👑 **Fish God**"), server);
+        assertTrue(global.startsWith("🥇"), global);
     }
 
     @Test
     void onlyYourOwnProfileHasALeaveButton() {
         Inventory inv = new Inventory("hank");
-        assertEquals(1, buttons(Views.profile(inv, OWNER, OWNER)).size());
-        assertTrue(Views.profile(inv, OWNER, 999L).getComponents().isEmpty());
+        assertEquals(1, buttons(Views.profile(inv, OWNER, OWNER, false)).size());
+        assertTrue(Views.profile(inv, OWNER, 999L, false).getComponents().isEmpty());
+        assertTrue(Views.profile(inv, OWNER, 999L, true).getEmbeds().get(0).getTitle().startsWith("👑"));
     }
 
     @Test

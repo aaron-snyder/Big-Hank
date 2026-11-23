@@ -25,7 +25,7 @@ public enum Species {
     private final String displayName;
     private final int tier;
     private final int minInches; // inclusive
-    private final int maxInches; // exclusive
+    private final int maxInches; // exclusive (sizes go up to maxInches - 0.1)
 
     Species(String displayName, int tier, int minInches, int maxInches) {
         this.displayName = displayName;
@@ -42,8 +42,9 @@ public enum Species {
         return tier;
     }
 
-    public int randomSize(RandomGenerator rng) {
-        return rng.nextInt(minInches, maxInches);
+    /** A random size in inches, to one decimal place (decimals make exact ties on the leaderboard rare). */
+    public double randomSize(RandomGenerator rng) {
+        return rng.nextInt(minInches * 10, maxInches * 10) / 10.0;
     }
 
     /** All species a given rod can reel in. */

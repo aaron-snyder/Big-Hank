@@ -55,4 +55,36 @@ class GameStoreTest {
         Files.writeString(file, "{ this is not json");
         assertThrows(IOException.class, () -> GameStore.load(file));
     }
+
+    @Test
+    void loadsSaveFilesFromTheOlderVersion() throws IOException {
+        // Whole-inch sizes, the old cooldown field, no catch times, no roles: what's on Railway right now.
+        Path file = dir.resolve("old.json");
+        Files.writeString(file, """
+                {
+                  "players": {
+                    "123": {
+                      "name": "aaron", "coins": 250, "rods": ["GUPPY_GETTER", "TROUT_TICKLER"],
+                      "baits": {"WORM": 3}, "equippedBait": "WORM",
+                      "fish": [{"species": "CATFISH", "size": 21}],
+                      "lastCastMillis": 1763900000000, "totalCaught": 40, "lifetimeEarnings": 600,
+                      "biggestCatch": {"species": "SALMON", "size": 33}
+                    }
+                  },
+                  "guilds": {"773784535199776769": {"fishingChannelId": 42, "players": [123]}}
+                }
+                """);
+
+        GameStore store = GameStore.load(file);
+        Inventory inv = store.player(123L);
+
+        assertEquals(250, inv.coins());
+        assertEquals("21.0 inch Catfish", inv.fish().get(0).toString());
+        assertEquals(33.0, inv.biggestCatch().size());
+        assertEquals(0L, inv.biggestCatch().caughtAt());
+        assertEquals(1, store.playersIn(773784535199776769L).size());
+        assertEquals(null, store.guild(773784535199776769L).fishGodRoleId());
+        inv.cast(Rod.TROUT_TICKLER, 1, new Random(1)); // and it still plays
+        inv.cast(Rod.TROUT_TICKLER, 1, new Random(2)); // with no cooldown
+    }
 }

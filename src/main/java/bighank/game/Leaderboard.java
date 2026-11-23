@@ -4,71 +4,46 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
-import java.util.function.ToLongFunction;
 
-/** Ranks players by one of a few lifetime stats. */
+/**
+ * Ranks anglers by the biggest fish they've ever caught. Ties go to whoever caught it first, so there's always
+ * exactly one #1. In a server, that's the Fish God.
+ */
 public final class Leaderboard {
 
-    public enum Category {
-        EARNINGS("CarpCoins earned", Inventory::lifetimeEarnings),
-        BIGGEST("Biggest catch", inv -> inv.biggestCatch() == null ? 0 : inv.biggestCatch().size()),
-        CATCHES("Fish caught", Inventory::totalCaught);
-
-        private final String displayName;
-        private final ToLongFunction<Inventory> score;
-
-        Category(String displayName, ToLongFunction<Inventory> score) {
-            this.displayName = displayName;
-            this.score = score;
-        }
-
-        public String displayName() {
-            return displayName;
-        }
-
-        public long score(Inventory inv) {
-            return score.applyAsLong(inv);
-        }
-
-        /** How a player's score reads on the board. */
-        public String describe(Inventory inv) {
-            return switch (this) {
-                case EARNINGS -> String.format("%,d CarpCoins", inv.lifetimeEarnings());
-                case BIGGEST -> String.valueOf(inv.biggestCatch());
-                case CATCHES -> String.format("%,d fish", inv.totalCaught());
-            };
-        }
-    }
-
     public record Entry(int rank, long userId, Inventory inventory) {}
+
+    /** Bigger fish first; for an exact tie, the earlier catch; then user id so the order never flickers. */
+    private static final Comparator<Map.Entry<Long, Inventory>> ORDER =
+            Comparator.<Map.Entry<Long, Inventory>>comparingDouble(e -> -e.getValue().biggestCatch().size())
+                    .thenComparingLong(e -> e.getValue().biggestCatch().caughtAt())
+                    .thenComparingLong(Map.Entry::getKey);
 
     private Leaderboard() {}
 
     /**
-     * Ranks every player with a non-zero score, best first. Ties share a rank.
+     * Everyone who has caught at least one fish, best first.
      *
      * @param players user id to inventory, already filtered to the scope being ranked
      */
-    public static List<Entry> rank(Map<Long, Inventory> players, Category category) {
+    public static List<Entry> rank(Map<Long, Inventory> players) {
         List<Map.Entry<Long, Inventory>> sorted = players.entrySet().stream()
-                .filter(e -> category.score(e.getValue()) > 0)
-                .sorted(Comparator.comparingLong((Map.Entry<Long, Inventory> e) -> category.score(e.getValue()))
-                        .reversed()
-                        .thenComparing(e -> e.getKey()))
+                .filter(e -> e.getValue().biggestCatch() != null)
+                .sorted(ORDER)
                 .toList();
-
         List<Entry> ranked = new ArrayList<>(sorted.size());
-        long previousScore = Long.MIN_VALUE;
-        int rank = 0;
         for (int i = 0; i < sorted.size(); i++) {
-            Map.Entry<Long, Inventory> e = sorted.get(i);
-            long score = category.score(e.getValue());
-            if (score != previousScore) {
-                rank = i + 1;
-                previousScore = score;
-            }
-            ranked.add(new Entry(rank, e.getKey(), e.getValue()));
+            ranked.add(new Entry(i + 1, sorted.get(i).getKey(), sorted.get(i).getValue()));
         }
         return ranked;
+    }
+
+    /** The #1 angler's user id, or null if nobody has caught anything yet. */
+    public static Long leader(Map<Long, Inventory> players) {
+        return players.entrySet().stream()
+                .filter(e -> e.getValue().biggestCatch() != null)
+                .min(ORDER)
+                .map(Map.Entry::getKey)
+                .orElse(null);
     }
 }

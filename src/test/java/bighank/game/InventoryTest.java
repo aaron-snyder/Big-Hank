@@ -45,12 +45,35 @@ class InventoryTest {
     }
 
     @Test
-    void cooldownBlocksRapidCasts() {
+    void noCooldownBetweenCasts() {
         Inventory inv = new Inventory("hank");
-        inv.cast(Rod.STARTER, 100_000, rng);
-        assertThrows(GameException.class, () -> inv.cast(Rod.STARTER, 101_000, rng));
-        inv.cast(Rod.STARTER, 100_000 + Inventory.CAST_COOLDOWN_MILLIS, rng);
-        assertEquals(2, inv.fish().size());
+        for (int i = 0; i < 20; i++) {
+            inv.cast(Rod.STARTER, 100_000, rng); // same instant, every time
+        }
+        assertEquals(20, inv.fish().size());
+    }
+
+    @Test
+    void sizesHaveOneDecimalAndRememberWhenTheyWereCaught() {
+        Inventory inv = new Inventory("hank");
+        inv.buyRod(Rod.TROUT_TICKLER);
+        for (int i = 0; i < 200; i++) {
+            Fish f = inv.cast(Rod.TROUT_TICKLER, 5_000L + i, rng).fish();
+            assertEquals(f.size(), Math.round(f.size() * 10) / 10.0, 1e-9, "one decimal place");
+            assertEquals(5_000L + i, f.caughtAt());
+            assertEquals(Math.round(f.size()), f.value(), "sells for its length, rounded");
+        }
+        assertTrue(inv.fish().get(0).toString().matches("\\d+\\.\\d inch .+"), inv.fish().get(0).toString());
+    }
+
+    @Test
+    void topGearIsReachable() {
+        // The whole rod ladder should cost a reasonable amount, not a million CarpCoins.
+        long total = 0;
+        for (Rod rod : Rod.values()) {
+            total += rod.price();
+        }
+        assertTrue(total <= 30_000, "all rods cost " + total);
     }
 
     @Test
@@ -58,7 +81,7 @@ class InventoryTest {
         Inventory inv = new Inventory("hank");
         long expected = 0;
         for (int i = 0; i < 7; i++) {
-            expected += inv.cast(Rod.STARTER, 100_000L + i * Inventory.CAST_COOLDOWN_MILLIS, rng).fish().value();
+            expected += inv.cast(Rod.STARTER, 100_000L + i, rng).fish().value();
         }
         Inventory.Sale sale = inv.sellAll();
         assertEquals(7, sale.fishSold());
@@ -79,7 +102,7 @@ class InventoryTest {
         inv.equipBait(Bait.SPINNER_LURE);
 
         for (int i = 0; i < Bait.USES_PER_PACK; i++) {
-            Inventory.Catch c = inv.cast(Rod.STARTER, 100_000L + i * Inventory.CAST_COOLDOWN_MILLIS, rng);
+            Inventory.Catch c = inv.cast(Rod.STARTER, 100_000L + i, rng);
             assertEquals(Bait.SPINNER_LURE, c.bait());
             assertEquals(Bait.USES_PER_PACK - 1 - i, c.baitLeft());
             assertTrue(c.fish().size() >= 16, "spinner adds at least 15 inches");
@@ -95,7 +118,7 @@ class InventoryTest {
                 new HashSet<>(Species.catchableWith(Rod.GUPPY_GETTER)));
         assertEquals(Species.values().length, Species.catchableWith(Rod.TUNA_TAMER).size());
         for (int i = 0; i < 500; i++) {
-            Fish f = Fish.roll(Rod.TROUT_TICKLER, null, rng);
+            Fish f = Fish.roll(Rod.TROUT_TICKLER, null, rng, 0);
             assertTrue(f.species().tier() <= Rod.TROUT_TICKLER.tier());
             assertTrue(f.size() >= 1);
         }

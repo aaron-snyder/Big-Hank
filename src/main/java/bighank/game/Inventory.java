@@ -17,7 +17,6 @@ import java.util.random.RandomGenerator;
  */
 public final class Inventory {
     public static final long STARTING_COINS = 100;
-    public static final long CAST_COOLDOWN_MILLIS = 5_000;
 
     private String name;
     private long coins = STARTING_COINS;
@@ -25,7 +24,6 @@ public final class Inventory {
     private Map<Bait, Integer> baits = new EnumMap<>(Bait.class);
     private Bait equippedBait;
     private List<Fish> fish = new ArrayList<>();
-    private long lastCastMillis;
 
     // Lifetime stats, used by the leaderboards
     private long totalCaught;
@@ -46,19 +44,14 @@ public final class Inventory {
 
     // ---------------------------------------------------------------- fishing
 
+    /** Casts a line. There's no cooldown: cast as fast as you can click. */
     public Catch cast(Rod rod, long nowMillis, RandomGenerator rng) {
         if (!rods.contains(rod)) {
             throw new GameException("Yain't got the " + rod.displayName() + "! Check the `/store`.");
         }
-        long waitMillis = cooldownRemainingMillis(nowMillis);
-        if (waitMillis > 0) {
-            long seconds = (waitMillis + 999) / 1000;
-            throw new GameException("Whoa there! Wait " + seconds + " more second" + (seconds == 1 ? "" : "s")
-                    + " before fishin' again.");
-        }
 
         Bait usedBait = equippedBait;
-        Fish caught = Fish.roll(rod, usedBait, rng);
+        Fish caught = Fish.roll(rod, usedBait, rng, nowMillis);
         int baitLeft = 0;
         if (usedBait != null) {
             baitLeft = baitCount(usedBait) - 1;
@@ -74,12 +67,7 @@ public final class Inventory {
         }
         fish.add(caught);
         totalCaught++;
-        lastCastMillis = nowMillis;
         return new Catch(caught, rod, usedBait, baitLeft, personalBest);
-    }
-
-    public long cooldownRemainingMillis(long nowMillis) {
-        return Math.max(0, lastCastMillis + CAST_COOLDOWN_MILLIS - nowMillis);
     }
 
     /** The highest-tier rod the player owns. */

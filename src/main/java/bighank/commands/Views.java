@@ -10,6 +10,7 @@ import java.awt.Color;
 import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import net.dv8tion.jda.api.EmbedBuilder;
 import net.dv8tion.jda.api.components.actionrow.ActionRow;
@@ -28,11 +29,21 @@ final class Views {
 
     // ================================================================ fishing
 
-    /** The public message for a catch. "Cast again" edits this same message, so a fishing trip is one message. */
-    static MessageCreateData catchMessage(Inventory inv, long ownerId, Inventory.Catch c, long tripFish, long tripInches) {
-        StringBuilder text = new StringBuilder("🎣 **").append(clean(inv.name())).append("** caught a **")
-                .append(c.fish()).append("**!");
-        if (c.personalBest() && inv.totalCaught() > 1) {
+    /**
+     * The public message for a catch. "Cast again" edits this same message, so a fishing trip is one message.
+     *
+     * @param tripTenths total inches caught this trip, in tenths (kept whole so it fits neatly in the button id)
+     * @param fishGod whether the angler is this server's Fish God after this catch
+     * @param newFishGod whether this very catch made them Fish God
+     */
+    static MessageCreateData catchMessage(Inventory inv, long ownerId, Inventory.Catch c, long tripFish,
+                                          long tripTenths, boolean fishGod, boolean newFishGod) {
+        StringBuilder text = new StringBuilder("🎣 ").append(fishGod ? "👑 Fish God " : "").append("**")
+                .append(clean(inv.name())).append("** caught a **").append(c.fish()).append("**!");
+        if (newFishGod) {
+            text.append("\n👑 That's the biggest catch in the lake! **").append(clean(inv.name()))
+                    .append("** is the new **Fish God**!");
+        } else if (c.personalBest() && inv.totalCaught() > 1) {
             text.append(" 🏆 New personal best!");
         }
         text.append("\n-# ").append(c.rod().displayName()).append(" · ");
@@ -41,11 +52,11 @@ final class Views {
         } else {
             text.append(c.bait().displayName()).append(c.baitLeft() == 0 ? " (that was your last)" : " (" + c.baitLeft() + " left)");
         }
-        text.append(String.format(" · this trip: %,d fish, %,d in", tripFish, tripInches));
+        text.append(String.format(Locale.ROOT, " · this trip: %,d fish, %,.1f in", tripFish, tripTenths / 10.0));
 
         return new MessageCreateBuilder()
                 .setContent(text.toString())
-                .setComponents(fishingButtons(inv, ownerId, tripFish, tripInches))
+                .setComponents(fishingButtons(inv, ownerId, tripFish, tripTenths))
                 .build();
     }
 
@@ -59,9 +70,9 @@ final class Views {
                 .build();
     }
 
-    private static ActionRow fishingButtons(Inventory inv, long ownerId, long tripFish, long tripInches) {
+    private static ActionRow fishingButtons(Inventory inv, long ownerId, long tripFish, long tripTenths) {
         return ActionRow.of(
-                Button.primary(ButtonId.of(ButtonId.CAST, ownerId, tripFish, tripInches), "Cast again")
+                Button.primary(ButtonId.of(ButtonId.CAST, ownerId, tripFish, tripTenths), "Cast again")
                         .withEmoji(Emoji.fromUnicode("🎣")),
                 sellButton(inv, ButtonId.of(ButtonId.SELL_CATCH, ownerId)));
     }
@@ -148,7 +159,7 @@ final class Views {
     // ================================================================ profile
 
     /** A player's stats, gear, and bucket. Viewing your own adds a Leave button. */
-    static MessageCreateData profile(Inventory inv, long ownerId, long viewerId) {
+    static MessageCreateData profile(Inventory inv, long ownerId, long viewerId, boolean fishGod) {
         StringBuilder baits = new StringBuilder();
         for (Bait bait : Bait.values()) {
             int count = inv.baitCount(bait);
@@ -166,7 +177,8 @@ final class Views {
 
         EmbedBuilder embed = new EmbedBuilder()
                 .setColor(LAKE_BLUE)
-                .setTitle("🎣 " + clean(inv.name()) + "'s Profile")
+                .setTitle((fishGod ? "👑 " : "🎣 ") + clean(inv.name()) + "'s Profile")
+                .setDescription(fishGod ? "**Fish God** of this lake: the biggest catch in the server." : null)
                 .addField("CarpCoins", String.format("%,d", inv.coins()), true)
                 .addField("Fish caught", String.format("%,d", inv.totalCaught()), true)
                 .addField("Earned all-time", String.format("%,d", inv.lifetimeEarnings()), true)
@@ -191,74 +203,71 @@ final class Views {
         if (inv.fish().isEmpty()) {
             return "Empty. Go `/fish`!";
         }
-        Map<Species, long[]> bySpecies = new EnumMap<>(Species.class); // {count, biggest}
+        Map<Species, double[]> bySpecies = new EnumMap<>(Species.class); // {count, biggest}
         for (Fish f : inv.fish()) {
-            long[] s = bySpecies.computeIfAbsent(f.species(), k -> new long[2]);
+            double[] s = bySpecies.computeIfAbsent(f.species(), k -> new double[2]);
             s[0]++;
             s[1] = Math.max(s[1], f.size());
         }
         StringBuilder lines = new StringBuilder();
-        bySpecies.forEach((species, s) -> lines.append(String.format("%s ×%d *(biggest %d in)*%n",
-                species.displayName(), s[0], s[1])));
+        bySpecies.forEach((species, s) -> lines.append(String.format(Locale.ROOT, "%s ×%d *(biggest %.1f in)*%n",
+                species.displayName(), (long) s[0], s[1])));
         return lines.toString();
     }
 
     // ================================================================ leaderboard
 
-    static MessageCreateData leaderboard(List<Leaderboard.Entry> ranking, long viewerId, boolean global,
-                                         Leaderboard.Category category) {
+    /** Biggest catches, best first. On a server board, #1 is crowned Fish God. */
+    static MessageCreateData leaderboard(List<Leaderboard.Entry> ranking, long viewerId, boolean global) {
         StringBuilder board = new StringBuilder();
         for (Leaderboard.Entry e : ranking.subList(0, Math.min(LEADERBOARD_SIZE, ranking.size()))) {
-            board.append(formatEntry(e, category, viewerId)).append('\n');
+            board.append(formatEntry(e, viewerId, global)).append('\n');
         }
         // Show the viewer where they stand, even outside the top 10.
         ranking.stream()
                 .skip(LEADERBOARD_SIZE)
                 .filter(e -> e.userId() == viewerId)
                 .findFirst()
-                .ifPresent(e -> board.append("…\n").append(formatEntry(e, category, viewerId)));
+                .ifPresent(e -> board.append("…\n").append(formatEntry(e, viewerId, global)));
 
         EmbedBuilder embed = new EmbedBuilder()
                 .setColor(LAKE_BLUE)
-                .setTitle("🏆 " + (global ? "Global" : "Server") + " Leaderboard: " + category.displayName())
-                .setDescription(board.isEmpty() ? "Nobody's on the board yet. Go catch something!" : board)
-                .setFooter(global ? "Anglers from every server" : "Anglers who joined this server's lake");
-
-        // Every button id in a message must be unique, so scope and category tabs get different tags
-        // (otherwise "Global" and the current category's tab would point at the same view).
-        List<Button> scopes = List.of(
-                tab(ButtonId.of(ButtonId.LEADERBOARD, viewerId, "server", category.name(), "scope"), "This server", "🏠", !global),
-                tab(ButtonId.of(ButtonId.LEADERBOARD, viewerId, "global", category.name(), "scope"), "Global", "🌎", global));
-        List<Button> categories = new ArrayList<>();
-        for (Leaderboard.Category c : Leaderboard.Category.values()) {
-            categories.add(tab(ButtonId.of(ButtonId.LEADERBOARD, viewerId, global ? "global" : "server", c.name(), "category"),
-                    c.displayName(), null, c == category));
-        }
+                .setTitle("🏆 " + (global ? "Global" : "Server") + " Leaderboard: Biggest Catch")
+                .setDescription(board.isEmpty() ? "Nobody's caught anything yet. Go `/fish`!" : board)
+                .setFooter(global
+                        ? "The biggest fish ever caught, across every server"
+                        : "The #1 angler here holds the title of Fish God. Ties go to whoever caught it first.");
 
         return new MessageCreateBuilder()
                 .setEmbeds(embed.build())
-                .setComponents(ActionRow.of(scopes), ActionRow.of(categories))
+                .setComponents(ActionRow.of(
+                        tab(ButtonId.of(ButtonId.LEADERBOARD, viewerId, "server"), "This server", "🏠", !global),
+                        tab(ButtonId.of(ButtonId.LEADERBOARD, viewerId, "global"), "Global", "🌎", global)))
                 .build();
     }
 
     /** A button that acts like a tab: the selected one is highlighted and can't be pressed again. */
     private static Button tab(String id, String label, String emoji, boolean selected) {
         Button button = selected ? Button.primary(id, label).asDisabled() : Button.secondary(id, label);
-        return emoji == null ? button : button.withEmoji(Emoji.fromUnicode(emoji));
+        return button.withEmoji(Emoji.fromUnicode(emoji));
     }
 
-    private static String formatEntry(Leaderboard.Entry e, Leaderboard.Category category, long viewerId) {
+    private static String formatEntry(Leaderboard.Entry e, long viewerId, boolean global) {
+        String name = clean(e.inventory().name());
+        if (e.userId() == viewerId) {
+            name = "__" + name + "__";
+        }
+        String fish = e.inventory().biggestCatch().toString();
+        if (e.rank() == 1 && !global) {
+            return "👑 **Fish God** " + name + ": " + fish;
+        }
         String medal = switch (e.rank()) {
             case 1 -> "🥇";
             case 2 -> "🥈";
             case 3 -> "🥉";
             default -> "**" + e.rank() + ".**";
         };
-        String name = clean(e.inventory().name());
-        if (e.userId() == viewerId) {
-            name = "__" + name + "__";
-        }
-        return medal + " " + name + ": " + category.describe(e.inventory());
+        return medal + " " + name + ": " + fish;
     }
 
     // ================================================================ joining
@@ -278,7 +287,7 @@ final class Views {
                 + "• `/fish`: cast a line. Add `bait:` to use bait; Hank remembers it until it runs out.\n"
                 + "• `/store`: buy rods and bait, and sell your fish.\n"
                 + "• `/profile`: your stats, gear, and bucket.\n"
-                + "• `/leaderboard`: the top anglers here and everywhere.\n"
+                + "• `/leaderboard`: the biggest catches. #1 in this server is crowned **Fish God**.\n"
                 + "-# Want out? `/profile` has a Leave button.";
     }
 

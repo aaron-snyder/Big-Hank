@@ -17,7 +17,7 @@ public enum Bait {
     private final String displayName;
     private final long price;
     private final int minBonus; // inclusive
-    private final int maxBonus; // exclusive
+    private final int maxBonus; // exclusive (bonuses go up to maxBonus - 0.1)
 
     Bait(String displayName, long price, int minBonus, int maxBonus) {
         this.displayName = displayName;
@@ -35,8 +35,8 @@ public enum Bait {
         return price;
     }
 
-    /** Extra inches this bait adds to a catch. */
-    public int randomBonus(RandomGenerator rng) {
-        return rng.nextInt(minBonus, maxBonus);
+    /** Extra inches this bait adds to a catch, to one decimal place. */
+    public double randomBonus(RandomGenerator rng) {
+        return rng.nextInt(minBonus * 10, maxBonus * 10) / 10.0;
     }
 }

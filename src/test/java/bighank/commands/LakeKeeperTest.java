@@ -253,4 +253,75 @@ class LakeKeeperTest {
 
         assertEquals(Status.FAILED, done.get(5, TimeUnit.SECONDS).status());
     }
+
+    // ================================================================ Fish God
+
+    /** Adds a joined player who has caught one fish (so they're on the leaderboard). */
+    private void anglerWithACatch(long userId, long caughtAt) {
+        store.createPlayer(userId, "p" + userId).cast(bighank.game.Rod.STARTER, caughtAt, new java.util.Random(userId));
+        store.guild(GUILD).join(userId);
+    }
+
+    @SuppressWarnings("unchecked")
+    private AuditableRestAction<Void> stubRemoveRole() {
+        AuditableRestAction<Void> remove = mock(AuditableRestAction.class, RETURNS_SELF);
+        when(guild.removeRoleFromMember(any(UserSnowflake.class), any(Role.class))).thenReturn(remove);
+        return remove;
+    }
+
+    @Test
+    void firstLeaderGetsAGoldPowerlessFishGodRole() {
+        anglerWithACatch(11L, 1_000);
+
+        keeper.refreshFishGodNow(guild);
+
+        verify(roleAction).setName(LakeKeeper.FISH_GOD_ROLE_NAME);
+        verify(roleAction).setPermissions(0L);
+        verify(guild).addRoleToMember(user(11L), eq(newRole));
+        assertEquals(NEW_ROLE, store.guild(GUILD).fishGodRoleId());
+        assertEquals(11L, store.guild(GUILD).fishGodUserId());
+    }
+
+    @Test
+    void fishGodRoleMovesToTheNewLeader() {
+        Role fishGod = role(400L);
+        when(guild.getRoleById(400L)).thenReturn(fishGod);
+        store.guild(GUILD).setFishGodRoleId(400L);
+        store.guild(GUILD).setFishGodUserId(11L);
+        store.createPlayer(11L, "old god"); // still joined, but holds no catch any more
+        store.guild(GUILD).join(11L);
+        anglerWithACatch(22L, 2_000);
+        stubRemoveRole();
+
+        keeper.refreshFishGodNow(guild);
+
+        verify(guild).removeRoleFromMember(user(11L), eq(fishGod));
+        verify(guild).addRoleToMember(user(22L), eq(fishGod));
+        verify(guild, never()).createRole();
+        assertEquals(22L, store.guild(GUILD).fishGodUserId());
+    }
+
+    @Test
+    void unchangedFishGodMeansNoDiscordCalls() {
+        Role fishGod = role(400L);
+        when(guild.getRoleById(400L)).thenReturn(fishGod);
+        store.guild(GUILD).setFishGodRoleId(400L);
+        store.guild(GUILD).setFishGodUserId(11L);
+        anglerWithACatch(11L, 1_000);
+
+        keeper.refreshFishGodNow(guild);
+
+        verify(guild, never()).addRoleToMember(any(UserSnowflake.class), any(Role.class));
+        verify(guild, never()).removeRoleFromMember(any(UserSnowflake.class), any(Role.class));
+    }
+
+    @Test
+    void noFishGodRoleUntilSomeoneCatchesSomething() {
+        store.createPlayer(11L, "hasn't fished");
+        store.guild(GUILD).join(11L);
+
+        keeper.refreshFishGodNow(guild);
+
+        verify(guild, never()).createRole();
+    }
 }

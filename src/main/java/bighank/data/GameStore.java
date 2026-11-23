@@ -12,8 +12,10 @@ import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -116,6 +118,17 @@ public final class GameStore {
                 }
             }
         }
+        return result;
+    }
+
+    /** Ids of every server whose lake this player has joined. */
+    public List<Long> guildsJoinedBy(long userId) {
+        List<Long> result = new ArrayList<>();
+        data.guilds.forEach((guildId, settings) -> {
+            if (settings.hasJoined(userId)) {
+                result.add(guildId);
+            }
+        });
         return result;
     }
 

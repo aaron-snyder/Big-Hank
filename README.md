@@ -15,11 +15,18 @@ to every server.
 | Command | What it does |
 |---|---|
 | `/start` | Join the lake (works in any channel). Run it again any time for the how-to-play guide |
-| `/fish [bait]` | Cast a line with your best rod. Pick bait from the list; Hank remembers it until it runs out. The catch message has **Cast again** and **Sell** buttons. 5 second cooldown |
+| `/fish [bait]` | Cast a line with your best rod. Pick bait from the list; Hank remembers it until it runs out. The catch message has **Cast again** and **Sell** buttons, with no wait between casts |
 | `/store` | Your wallet, gear, and bucket, with buttons to **buy rods and bait** and **sell your fish** |
 | `/profile [angler]` | Stats, gear, and bucket for you or another player. Yours has a **Leave the lake** button |
-| `/leaderboard` | Top anglers, with buttons to switch between this server and global, and between CarpCoins earned, biggest catch, and fish caught |
+| `/leaderboard` | The biggest fish ever caught, with buttons to switch between this server and global |
 | `/setup` | Server managers only: rebuild the lake channel and role if something got deleted |
+
+### 👑 Fish God
+
+Whoever holds the **biggest catch in a server** is that server's **Fish God**. They get a gold **Fish God**
+role in Discord, a crown next to their name in the lake, and the top spot on the server leaderboard. Catch
+something bigger and the title (and role) moves to you on the spot. Sizes go to a tenth of an inch, and if
+two fish are exactly the same size, whoever caught theirs first keeps the crown.
 
 Only catches are posted publicly (in the lake). The store, profiles, leaderboards, and errors are private
 messages that only you can see, and "Cast again" updates your catch message instead of posting a new one,
@@ -32,12 +39,16 @@ Better rods catch everything the cheaper rods can, plus bigger species:
 | Guppy Getter | starter | Goldfish, Guppy, Pufferfish |
 | Trout Tickler | 100 | Rainbow Trout, Smallmouth Bass |
 | Catfish Clobberer | 1,000 | Largemouth Bass, Catfish |
-| Salmon Slapper | 10,000 | Salmon, Halibut |
-| Tuna Tamer | 1,000,000 | Tuna |
+| Salmon Slapper | 5,000 | Salmon, Halibut |
+| Tuna Tamer | 20,000 | Tuna |
+
+Getting the Tuna Tamer takes about 1,000 casts with spinner lures (roughly half an hour of fishing), or
+about 2,000 with no bait. The Tuna Tamer is the only way to catch Tuna, the biggest fish in the lake.
 
 Bait comes in packs of 5 casts and adds inches to every fish: Worm (5), PowerBait (10),
-Glitter PowerBait (15), Spinner Lure (20). Prices and fish sizes are defined in the enums in
-`src/main/java/bighank/game/`, so they're easy to tune.
+Glitter PowerBait (15), Spinner Lure (20). A bigger fish sells for more *and* gives you a better shot
+at Fish God. Prices and fish sizes are defined in the enums in `src/main/java/bighank/game/`, so they're
+easy to tune.
 
 ---
 
@@ -102,7 +113,10 @@ Player progress is saved to `data/inventories.json` after every action. Back tha
 3. Tell your server: "type `/start` to play Big Hank's fishing game."
 
 Notes for server managers:
-- **The Lake Angler role grants no permissions.** It only unlocks the lake. You can hand it out yourself, or
+- **Big Hank's roles grant no permissions.** The **Fish God** role is gold, but it only shows its color if it's
+  the highest colored role a member has. To make it stand out, drag it higher in Server Settings → Roles, or
+  turn on "Display role members separately". Keep it *below* Big Hank's own role so he can still move it.
+- **The Lake Angler role** only unlocks the lake. You can hand it out yourself, or
   offer it in Discord's **Onboarding / Channels & Roles** (Community servers). Anyone who gets it that way is
   signed up automatically the first time they play.
 - You can move the channel into any category. If you do, check its permissions still hide it from @everyone.
@@ -202,11 +216,11 @@ policy short. Because Big Hank uses no privileged intents, verification doesn't 
     slash-command replies work without them.
     - **Manage Channels** creates #big-hanks-lake.
     - **Manage Roles** creates the Lake Angler role, hands it out on `/start`, removes it on Leave, and sets
-      the channel so only anglers can see it.
+      the channel so only anglers can see it. It also moves the Fish God role to each server's #1.
     - **View Channels** lets him grant anglers access to the channel. Discord only lets a bot grant
       permissions it has itself.
-    - Manage Roles can only touch roles *below* Big Hank's own role. The Lake Angler role he creates has zero
-      permissions.
+    - Manage Roles can only touch roles *below* Big Hank's own role. Both roles he creates (Lake Angler and
+      Fish God) have zero permissions.
   - **Private by default.** The lake is hidden from @everyone. Only Lake Anglers, Big Hank, and admins can see
     it, so non-players never get notifications or unread badges from the game.
   - **Respects deletions.** If a server deletes #big-hanks-lake, Big Hank never recreates it on his own.
