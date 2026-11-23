@@ -1,0 +1,16 @@
+# Secrets: never commit your bot token
+.env
+
+# Player save data (contains Discord user IDs)
+/data/
+
+# Build output
+/target/
+
+# IDE files
+.idea/
+*.iml
+.vscode/
+.classpath
+.project
+.settings/
